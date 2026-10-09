@@ -1,7 +1,7 @@
 {
   "name": "pendingyou-wake",
   "displayName": "Pending You",
-  "version": "2.49.0",
+  "version": "2.49.1",
   "description": "Wakes Claude Code when your person answers a Pending You card it posted, even while it sits idle. Installed by `npx pendingyou init`.",
   "author": {
     "name": "RecordPlane",
