@@ -1,7 +1,8 @@
 // Generated from packages/claude-plugin/src/wake/register.ts in recordplane/pendingyou: edit that, then run
 // `pnpm --filter @pendingyou/claude-plugin generate`.
 
-import { argumentsOf, blockedNote, CLAIM_PREFIX, CLI_COPY, cardTool, checked, claimLease, cliConfigOf, connectionOf, dueCards, emptyBook, failed, folderOf, HANDED_FAST_MS, HANDED_READS, HERDR_EVERY_MS, HERDR_RUN_MS, handedDue, handedNext, handedOf, handedText, handedView, herdrArgv, herdrPayload, holdOf, holdReply, inHerdr, isFresh, isRefusal, isStale, isWaitingOnYou, KEEP_MS, learn, leaseHolder, loadedNote, loadedPath, momentOf, originOf, PRESENCE_EVERY_MS, PRESENCE_RUN_MS, presenceArgv, prompted, put, readBook, readClaim, readSetup, readSince, resultObject, SETUP_AFTER_MS, SETUP_RETRY_MS, SETUP_SERVER, SETUP_TRIES, settle, setUpOf, setupNeeded, setupPrompt, stateOf, statusText, TICK_MS, takesHanded, told, toTell, untold, wakeText, } from "./wake.js";
+import { argumentsOf, blockedNote, CLAIM_PREFIX, CLI_COPY, cardTool, checked, claimedElsewhere, claimHeld, claimLease, cliConfigOf, connectionOf, dueCards, emptyBook, failed, folderOf, graceEnds, HANDED_FAST_MS, HANDED_READS, HERDR_EVERY_MS, HERDR_RUN_MS, handedDue, handedNext, handedOf, handedText, handedView, herdrArgv, herdrPayload, holdOf, holdReply, inHerdr, isFresh, isRefusal, isStale, isWaitingOnYou, KEEP_MS, LISTEN_RUN_MS, LISTENER_KEY, learn, leaseFor, leaseHolder, listenArgv, listened, loadedNote, loadedPath, mayListen, momentOf, originOf, PRESENCE_EVERY_MS, PRESENCE_RUN_MS, presenceArgv, prompted, put, readBook, readClaim, readListener, readSetup, readSignal, readSince, readWait, resultObject, SETUP_AFTER_MS, SETUP_RETRY_MS, SETUP_SERVER, SETUP_TRIES, SIGNAL_KEY, settle, setUpOf, setupNeeded, setupPrompt, stateOf, statusText, TICK_MS, takesHanded, told, toTell, untold, wakeText, } from "./wake.js";
+const UNHEARD = { error: 'unavailable' };
 const RETRY_MS = 60_000;
 const live = {
     me: '',
@@ -29,6 +30,8 @@ const live = {
     herdr: null,
     herdrSaid: undefined,
     herdrTimer: null,
+    waiting: false,
+    signalSeen: 0,
 };
 const keyOf = (sessionId) => `session:${sessionId}`;
 function blockedServer() {
@@ -181,28 +184,41 @@ async function deliverHanded($) {
     }
     const cards = [];
     const claims = [];
+    const me = live.sessionId;
     for (const handed of listed) {
         const known = live.handedTold.get(handed.requestId);
         if (readSince(known, handed.updatedAt) || known === handed.updatedAt)
             continue;
-        if (!takesHanded(handed, live.folders, live.home, now))
+        if (!takesHanded(handed, live.folders, live.home, now)) {
+            const again = graceEnds(handed, live.folders);
+            if (again !== null && again > now)
+                live.handedAt = Math.min(live.handedAt, again);
             continue;
+        }
         const key = `${CLAIM_PREFIX}${handed.requestId}`;
-        if (readClaim(await $.store.get(key))?.moment === handed.updatedAt) {
+        if (claimedElsewhere(await $.store.get(key), handed.updatedAt, me)) {
             live.handedTold.set(handed.requestId, handed.updatedAt);
             continue;
         }
         const args = { requestId: handed.requestId, name };
         if (!(await allowed($, server, args)))
             continue;
+        await $.store.set(key, { moment: handed.updatedAt, at: now, by: me });
         let view = null;
         try {
             view = handedView(resultObject(await $.mcp.call(server, 'get_request', args)), handed, name);
         }
         catch { }
-        if (!view)
+        const claim = await $.store.get(key);
+        if (!view) {
+            if (claimHeld(claim, handed.updatedAt, me))
+                await $.store.delete(key);
             continue;
-        await $.store.set(key, { moment: handed.updatedAt, at: now });
+        }
+        if (!claimHeld(claim, handed.updatedAt, me)) {
+            live.handedTold.set(handed.requestId, handed.updatedAt);
+            continue;
+        }
         live.handedTold.set(handed.requestId, handed.updatedAt);
         claims.push(key);
         cards.push(view);
@@ -216,6 +232,55 @@ async function deliverHanded($) {
             live.handedTold.delete(card.requestId);
         live.handedAt = (await $.clock.now()) + RETRY_MS;
     });
+}
+async function listenHanded($) {
+    const presence = live.presence;
+    if (!presence || live.waiting || !live.sessionId)
+        return;
+    const now = await $.clock.now();
+    const me = live.sessionId;
+    const record = readListener(await $.store.get(LISTENER_KEY));
+    if (!mayListen(record, me, live.seenAt, now))
+        return;
+    const lease = leaseFor(record, me, now);
+    await $.store.set(LISTENER_KEY, lease);
+    if (readListener(await $.store.get(LISTENER_KEY))?.by !== me)
+        return;
+    const argv = listenArgv(presence.config, presence.origin, lease.since);
+    let run;
+    try {
+        run = $.process.run(argv, { timeoutMs: LISTEN_RUN_MS });
+    }
+    catch {
+        await $.store.set(LISTENER_KEY, listened(lease, readWait(''), now));
+        return;
+    }
+    live.waiting = true;
+    run
+        .then((ran) => (ran.exitCode === 0 ? readWait(ran.stdout) : UNHEARD), () => UNHEARD)
+        .then(async (heard) => {
+        const at = await $.clock.now();
+        const current = readListener(await $.store.get(LISTENER_KEY));
+        if (!current || current.by === me)
+            await $.store.set(LISTENER_KEY, listened(lease, heard, at));
+        if ('handed' in heard && heard.handed.length) {
+            await $.store.set(SIGNAL_KEY, { at });
+            live.signalSeen = at;
+            live.handedAt = 0;
+        }
+    })
+        .catch(() => { })
+        .finally(() => {
+        live.waiting = false;
+        soon($);
+    });
+}
+async function heedSignal($) {
+    const at = readSignal(await $.store.get(SIGNAL_KEY));
+    if (at <= live.signalSeen)
+        return;
+    live.signalSeen = at;
+    live.handedAt = 0;
 }
 async function prune($) {
     const now = await $.clock.now();
@@ -298,6 +363,8 @@ async function tick($) {
         }
         for (const card of dueCards(live.book, now))
             await check($, card.requestId);
+        await listenHanded($).catch(() => { });
+        await heedSignal($).catch(() => { });
         if (!(await deliver($)))
             await deliverHanded($);
         showCards($);

@@ -11,6 +11,7 @@ import { channel } from './channel.ts'
 import { claudeWithChannel } from './claude.ts'
 import { ANSWER_DEADLINE_MARGIN_MS, readAnswerWait } from './codex-answers.ts'
 import { PlainError } from './errors.ts'
+import { waitHanded } from './handed-wait.ts'
 import { hold } from './hold.ts'
 import { init, status, uninstall } from './init.ts'
 import type { Io } from './io.ts'
@@ -90,8 +91,15 @@ async function run(io: Io, command: Command, hook: HookRun = { fallback: '' }): 
     case 'listen':
       // Codex's is detached, started by `posted`: nobody reads what it prints. OpenCode's plugin and Pi's extension
       // read their own child's. Codex's one listener for handed questions (0.14.0) is detached too.
-      if ('handed' in command)
+      if ('handed' in command) {
+        // Claude Code's (0.35.0): the wake mod's one wait, whose one line it reads.
+        if (command.app === 'claude-code')
+          return waitHanded(io, {
+            origin: command.origin,
+            ...(command.since ? { since: command.since } : {}),
+          })
         return listenHanded(io, { origin: command.origin, app: command.app ?? DEFAULT_APP })
+      }
       return listen(io, { ...command, app: command.app ?? DEFAULT_APP })
     case 'init':
       return init(io, command)

@@ -435,14 +435,16 @@ answers, once the 5-second window to undo is over:
   session in that folder that used Pending You most recently; never the one that asked, and never two. A sign-in that
   only hears (`--oauth`) hears every computer's, so it leaves one Pending You says went to another computer (by its
   name or its hostname); one that names no computer goes by the folder.
-- **Claude Code**: the wake mod looks for questions handed to the session's name (`list_pending`, every minute while
-  the session used Pending You in the last half hour, then every 3 minutes, for 12 hours), reads each with
+- **Claude Code**: within seconds since 0.35.0. One session on the computer keeps a wait open with Pending You for a
+  handed question (`listen --handed --app claude-code`, through the hooks' shim), and when one comes every session
+  there looks at once; otherwise the wake mod looks for questions handed to the session's name (`list_pending`, every
+  minute while the session used Pending You in the last half hour, then every 3 minutes, for 12 hours). It reads each with
   `get_request`, and starts a turn: “Pending You: your person handed you “Which AWS account for staging?” (req_…), a
   question from billing-webhooks (answer freely: your answer goes straight to billing-webhooks). Call get_request
   (requestId req_…, name “infra”) to read it and their note. If you know, answer_delegated with your answer and how you
   know; if not, hand_back with what you checked.” Among sessions by one name, the one working in the task's folder
   takes it (as `list_pending` gives it, `~/…` or a full path), one in another folder never does, and one that can't
-  tell its folder waits 5 minutes.
+  tell its folder waits half a minute (5 minutes before 0.35.0).
 - **Codex**: one listener for the app queues it into the thread it's for (`codex queue`, the same words).
 - **OpenCode and Pi**: the session's listener starts the turn through the plugin or extension; a session that used
   Pending You's card tools keeps listening for 12 hours, while the app is open.

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.35.0 (2026-10-09)
+
+- Claude Code hears a question handed to it within seconds. When you delegate a card to one of your Claude Code agents
+  (Delegate, or a card handed across), the wake mod no longer waits for its next look (every minute, or every 3
+  minutes after a quiet half hour): one session on the computer keeps a wait open with Pending You,
+  `pendingyou listen --handed --app claude-code`, which asks for handed questions alone and returns as soon as one
+  comes, and every session there looks at once. The session in the card's folder takes it, about 5 to 10 seconds after
+  you tap (the 5-second Undo hold included). The timer stays, as the fallback. Nothing to set up: it runs through the
+  hooks' shim `init` already wrote.
+- A session that can't tell its folder now leaves a question handed to a task in one for half a minute, not 5 minutes,
+  and looks again as that ends.
+- When sessions look together, only one tells it: each claims the question before reading it, and the last claim
+  stands.
+
 ## 0.34.2 (2026-10-09)
 
 - Fixed: in bypassPermissions or dontAsk mode, a Claude Code dialog for a tool its agent had used before (a subagent's

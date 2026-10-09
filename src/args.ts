@@ -66,9 +66,10 @@ export type Command =
    * What `posted` starts in the background (0.11.0): wakes one Codex thread when its cards are answered. OpenCode's
    * plugin and Pi's extension start one per session (0.12.0) and start the turn themselves. `--handed` (0.14.0) is
    * Codex's one listener for questions the person hands its threads from other assistants, in place of a thread.
+   * With `--app claude-code` (0.35.0, handed-wait.ts) it's the wake mod's: one wait, from `since`, that says what came.
    */
   | { name: 'listen'; origin: string; app?: AppId; thread: string }
-  | { name: 'listen'; origin: string; app?: AppId; handed: true }
+  | { name: 'listen'; origin: string; app?: AppId; handed: true; since?: string }
   | {
       name: 'init'
       origin: string
@@ -214,6 +215,8 @@ export class UsageError extends Error {
 }
 
 const REQUEST_ID = /^req_[A-Za-z0-9-]{1,40}$/
+/** A time as Pending You gives one (`changedAt`): ISO 8601, in UTC. */
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/
 
 /**
  * A duration: `90s`, `3m`, `4h`, or a bare number of minutes.
@@ -310,7 +313,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   handoff: { origin: true, app: true },
   stopcheck: { origin: true, app: true },
   posted: { origin: true, app: true },
-  listen: { origin: true, app: true, thread: true, handed: false },
+  listen: { origin: true, app: true, thread: true, handed: false, since: true },
   permission: { origin: true, app: true },
   'permission-done': { origin: true, app: true },
   notify: { origin: true, app: true },
@@ -575,10 +578,14 @@ export function parseArgs(
     case 'listen': {
       none()
       const thread = text('thread')
+      const since = text('since')
       if (flags.has('handed')) {
         if (thread !== undefined) throw new UsageError('Use --thread or --handed, not both.')
-        return { name: 'listen', origin, ...app(), handed: true }
+        if (since !== undefined && !ISO_TIME.test(since))
+          throw new UsageError('--since needs a time, like: --since 2026-10-09T12:00:00.000Z')
+        return { name: 'listen', origin, ...app(), handed: true, ...(since ? { since } : {}) }
       }
+      if (since !== undefined) throw new UsageError('--since goes with --handed.')
       if (thread === undefined || !THREAD.test(thread))
         throw new UsageError('listen needs the thread it wakes, like: --thread 0199a1b2-…')
       return { name: 'listen', origin, ...app(), thread }

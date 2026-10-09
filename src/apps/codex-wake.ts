@@ -553,7 +553,7 @@ export async function computerNames(
  * What a listener leaves as another computer's (0.14.0): with a sign-in that only hears, a handed question whose
  * `machine` names another computer than this one; with this computer's own connection, none (it hears only its own).
  */
-async function elsewhereFor(
+export async function elsewhereFor(
   io: Io,
   origin: string,
   app: AppId,

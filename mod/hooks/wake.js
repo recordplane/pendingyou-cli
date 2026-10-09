@@ -592,7 +592,7 @@ export function claimLease(value, me, now) {
 export const HANDED_FAST_MS = 60_000;
 export const HANDED_SLOW_MS = 3 * 60_000;
 export const HANDED_FOR_MS = 12 * 60 * 60_000;
-export const HANDED_GRACE_MS = 5 * 60_000;
+export const HANDED_GRACE_MS = 30_000;
 export const CLAIM_PREFIX = 'handed:';
 export const HANDED_PREFIX = 'Pending You: your person handed you';
 export const HANDED_REPLY = 'on the question handed to you';
@@ -670,6 +670,12 @@ export function takesHanded(handed, folders, home, now) {
         return now - Date.parse(handed.updatedAt) >= HANDED_GRACE_MS;
     return inTaskFolder(folders, handed.cwd, home);
 }
+export function graceEnds(handed, folders) {
+    if (handed.byName || !handed.cwd || folders.length > 0)
+        return null;
+    const at = Date.parse(handed.updatedAt);
+    return Number.isFinite(at) ? at + HANDED_GRACE_MS : null;
+}
 export function folderOf(tool, input) {
     if (tool !== 'post_request')
         return undefined;
@@ -698,8 +704,86 @@ export function handedView(output, handed, name) {
 export function readClaim(value) {
     if (!isObject(value) || typeof value.moment !== 'string')
         return null;
-    return { moment: value.moment, at: count(value.at) ?? 0 };
+    const by = text(value.by, 200);
+    return { moment: value.moment, at: count(value.at) ?? 0, ...(by ? { by } : {}) };
 }
+export function claimedElsewhere(value, moment, me) {
+    const claim = readClaim(value);
+    return claim?.moment === moment && claim.by !== me;
+}
+export function claimHeld(value, moment, me) {
+    const claim = readClaim(value);
+    return claim?.moment === moment && claim.by === me;
+}
+export const LISTENER_KEY = 'handed-listener';
+export const SIGNAL_KEY = 'handed-signal';
+export const LISTEN_RUN_MS = 4 * 60_000;
+export const LISTENER_LEASE_MS = LISTEN_RUN_MS + 30_000;
+export const LISTENER_KEEP_MS = 15_000;
+export const LISTEN_RETRY_MS = 2 * 60_000;
+export const LISTEN_QUIET_MS = 30 * 60_000;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+const isoOf = (value) => typeof value === 'string' && ISO_TIME.test(value) ? value : undefined;
+export function readListener(value) {
+    if (!isObject(value))
+        return null;
+    const by = text(value.by, 200);
+    const until = count(value.until);
+    if (!by || until === undefined)
+        return null;
+    const since = isoOf(value.since);
+    const quietUntil = count(value.quietUntil);
+    return { by, until, ...(since ? { since } : {}), ...(quietUntil ? { quietUntil } : {}) };
+}
+export function mayListen(record, me, seenAt, now) {
+    if (seenAt <= 0 || now - seenAt >= HANDED_FOR_MS)
+        return false;
+    if (record?.quietUntil && now < record.quietUntil)
+        return false;
+    return !record || record.by === me || now >= record.until;
+}
+export const leaseFor = (record, me, now) => ({
+    by: me,
+    until: now + LISTENER_LEASE_MS,
+    ...(record?.since ? { since: record.since } : {}),
+});
+export function readWait(stdout) {
+    const line = stdout.trim().split('\n').at(-1) ?? '';
+    const parsed = parseJson(line);
+    if (!isObject(parsed))
+        return { error: 'unknown' };
+    const since = isoOf(parsed.since);
+    if (parsed.error === 'signin' || parsed.error === 'unavailable')
+        return { error: parsed.error, ...(since ? { since } : {}) };
+    if (!Array.isArray(parsed.handed))
+        return { error: 'unknown' };
+    const handed = parsed.handed.filter((id) => typeof id === 'string' && REQUEST_ID.test(id));
+    return { handed, ...(since ? { since } : {}) };
+}
+export function listened(record, heard, now) {
+    const since = heard.since ?? record.since;
+    const quiet = 'error' in heard
+        ? now + (heard.error === 'unavailable' ? LISTEN_RETRY_MS : LISTEN_QUIET_MS)
+        : undefined;
+    return {
+        by: record.by,
+        until: now + LISTENER_KEEP_MS,
+        ...(since ? { since } : {}),
+        ...(quiet ? { quietUntil: quiet } : {}),
+    };
+}
+export function listenArgv(config, origin, since) {
+    return [
+        `${config}/bin/pendingyou-hook`,
+        'listen',
+        '--handed',
+        '--app',
+        'claude-code',
+        ...(since ? ['--since', since] : []),
+        ...(origin === PRODUCTION ? [] : ['--origin', origin]),
+    ];
+}
+export const readSignal = (value) => (isObject(value) ? (count(value.at) ?? 0) : 0);
 function cut(value, max) {
     const chars = [...value.replace(/\s+/g, ' ').trim()];
     return chars.length <= max
