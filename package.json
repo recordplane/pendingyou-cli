@@ -1,0 +1,39 @@
+{
+  "name": "pendingyou",
+  "version": "0.32.3",
+  "description": "Pending You for your coding agents: one command sets up Claude Code, Codex, OpenCode and Pi to ask you through Pending You and hear your answers, even while they sit idle.",
+  "license": "Apache-2.0",
+  "homepage": "https://www.pendingyou.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/recordplane/pendingyou-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/recordplane/pendingyou-cli/issues"
+  },
+  "type": "module",
+  "bin": {
+    "pendingyou": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "mod",
+    "!mod/tests",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && chmod +x dist/cli.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

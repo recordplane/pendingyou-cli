@@ -1,0 +1,7 @@
+{
+  "description": "Pending You wakes this session when your person answers one of its cards (Claude Code 2.1.287 and later).",
+  "hooks": {},
+  "modules": [
+    "./register.js"
+  ]
+}
