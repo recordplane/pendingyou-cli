@@ -67,6 +67,20 @@
 // answers the dialog; answered in the terminal first, the hooks settle the prompt as before and its card is withdrawn
 // (`closing`). This file then holds the masked input of a relayed prompt (0600, gone with the prompt); nothing else.
 //
+// Since 0.34.1 a relayed prompt has the only card for its dialog. Claude Code writes a prompted call to the transcript
+// only once it's answered, so the Notification hook took a session's second Write (its transcript's newest Write an
+// earlier one, answered) for a dialog no prompt explained, and put the button-less card up beside the relayed one. A
+// relayed prompt is on screen (Claude Code relays only a dialog it shows), so the Notification shows it and adds
+// nothing while one is open; relaying a dialog drops a Notification's prompt, and a session's card already up for that
+// dialog is withdrawn (`moving`) as the relayed card goes up at once.
+//
+// Since 0.34.2 a quiet prompt is judged by its own call alone. Claude Code writes a prompted call to the transcript only
+// once its dialog is answered, so the open call isn't there yet, and the agent's newest call of the same tool, which
+// 0.32.2 fell back on, is an earlier one, answered: a subagent's second Bash dialog on screen got no card. Now only the
+// prompt's own key counts (an earlier call with the same key, answered before the prompt was asked, doesn't), and a
+// call not found is still waiting; a call Claude Code denied by itself is written with its refusal at once, so it's
+// found, answered, and gets no card.
+//
 // Since 0.34.0 Codex can ask on the person's phone first (§4, PA7), once they set a wait with `npx pendingyou
 // codex-answers --wait <minutes>` (codex-answers.ts). Codex runs its PermissionRequest hook before it shows anything,
 // so while the hook waits nothing else is asking: the hook posts the card at once (no grace), with Allow and Deny, the
@@ -189,8 +203,8 @@ export interface Prompt {
   /** A hash of the tool and its input (and a subagent's id): PostToolUse for the same call settles it. */
   key: string
   /**
-   * The tool's name (0.15.0): a Codex call that ran settles a prompt for the same tool; Claude Code's (0.32.2) finds
-   * its call in the agent's transcript when its input reads differently there.
+   * The tool's name (0.15.0): for the card's words; a Codex call that ran settles a prompt for the same tool, and a
+   * relayed dialog (0.33.0) is matched to a prompt by it. Never to find a Claude Code call in a transcript (0.34.2).
    */
   tool?: string
   /**
@@ -261,6 +275,11 @@ interface Card {
   version: number
   key: string
   name: string
+  /**
+   * The session's card shows a dialog that has a relayed card now (0.34.1): that card goes up at once, and this one is
+   * withdrawn, saying so (never left beside it, never "answered").
+   */
+  moving?: true
 }
 
 /** A session's file. Ids, hashes and the cards' redacted words: never a tool's input. */
@@ -574,6 +593,26 @@ function keepNewest(state: SessionState): void {
   state.prompts = state.prompts.slice(-MAX_PROMPTS)
 }
 
+/**
+ * The session's card moves to a relayed one (0.34.1) when the dialog it shows has been relayed: its prompt was, or it
+ * showed a Notification's words (or a prompt since settled) and a relayed prompt explains the dialog now.
+ */
+function markMoving(state: SessionState): void {
+  const card = state.card
+  if (!card) return
+  const shown = state.prompts.find((prompt) => prompt.key === card.key && !prompt.notice)
+  if (shown ? shown.relay : state.prompts.some((prompt) => prompt.relay)) card.moving = true
+}
+
+/**
+ * A dialog was relayed (0.34.1): a Notification's prompt is that dialog (Claude Code shows one at a time and says so of
+ * the one on screen), or one already gone, so it goes; a session's card already up for it moves to the relayed card.
+ */
+function relayed(state: SessionState): void {
+  state.prompts = state.prompts.filter((prompt) => !prompt.notice)
+  markMoving(state)
+}
+
 /** How long after the channel wrote a dialog down itself a hook's late prompt for the same tool is that dialog. */
 const ADOPT_MS = 30_000
 
@@ -815,7 +854,10 @@ async function notified(io: Io, origin: string, input: Json): Promise<void> {
   let picked: string | null = null
   for (const prompt of (known?.prompts ?? []).slice().reverse()) {
     if (prompt.shown !== undefined || prompt.notice || prompt.at > before) continue
-    if (await stillAsked(known as SessionState, prompt)) {
+    // A relayed prompt's dialog is on screen (0.34.1): Claude Code relays only a dialog it shows, and writes a prompted
+    // call to its transcript only once it's answered, so the transcript can't say (its newest call of the same tool is
+    // an earlier one, answered).
+    if (prompt.relay || (await stillAsked(known as SessionState, prompt))) {
       picked = promptId(prompt)
       break
     }
@@ -843,8 +885,9 @@ async function notified(io: Io, origin: string, input: Json): Promise<void> {
       shows.shown = now
       // A dialog on screen is worth another try at a card that kept failing.
       delete shows.failed
-    } else if (next.prompts.some((prompt) => prompt.shown !== undefined)) {
-      // A dialog a shown prompt explains (one waiting behind it, or the same one again): its card is up, or going up.
+    } else if (next.prompts.some((prompt) => prompt.shown !== undefined || prompt.relay)) {
+      // A dialog a shown or relayed prompt explains (one waiting behind it, or the same one again): its card is up, or
+      // going up. Never a notice's card beside a relayed one (0.34.1).
       return state
     } else next.prompts = [...next.prompts, noticeOf(message, now)].slice(-MAX_PROMPTS)
     delete next.settled
@@ -903,7 +946,8 @@ type Plan =
   | { kind: 'check' }
   | { kind: 'post'; prompt: Prompt }
   | { kind: 'update'; prompt: Prompt }
-  | { kind: 'cancel' }
+  /** Withdraw the session's card: its prompts were settled, or (`moved`, 0.34.1) its dialog has a relayed card now. */
+  | { kind: 'cancel'; moved?: true }
   /** A relayed prompt's own card (0.33.0): Allow and Deny. */
   | { kind: 'relay'; prompt: Prompt }
   /** A relayed prompt's card whose prompt was settled (0.33.0). */
@@ -955,11 +999,14 @@ function relayPlan(state: SessionState, now: number, grace: number, then: Plan):
   if (closing) return { kind: 'close', card: closing }
   const waiting = state.prompts.filter((prompt) => prompt.relay && !prompt.card && !prompt.failed)
   if (waiting.length === 0) return then
+  // The session's card shows the dialog already (0.34.1): the relayed card takes its place at once.
   const dueAt = (prompt: Prompt) =>
-    Math.min(
-      Math.min(prompt.at, (prompt.relay as Relay).at) + grace,
-      prompt.shown ?? Number.POSITIVE_INFINITY,
-    )
+    state.card?.moving
+      ? now
+      : Math.min(
+          Math.min(prompt.at, (prompt.relay as Relay).at) + grace,
+          prompt.shown ?? Number.POSITIVE_INFINITY,
+        )
   const first = waiting.reduce((soonest, prompt) =>
     dueAt(prompt) < dueAt(soonest) ? prompt : soonest,
   )
@@ -973,7 +1020,10 @@ function relayPlan(state: SessionState, now: number, grace: number, then: Plan):
 /** The next step for the session's card, from the prompts that can have one: never a relayed one (0.33.0). */
 function cardPlan(state: SessionState, now: number, grace: number): Plan {
   const prompts = state.prompts.filter((prompt) => seen(prompt) && !prompt.relay)
-  if (prompts.length === 0) return state.card ? { kind: 'cancel' } : { kind: 'done' }
+  if (prompts.length === 0)
+    return state.card
+      ? { kind: 'cancel', ...(state.card.moving ? { moved: true as const } : {}) }
+      : { kind: 'done' }
   if (state.card) {
     const newest = shownOf(prompts)
     if (state.card.key === newest.key) return { kind: 'done' }
@@ -1180,10 +1230,19 @@ function callsOf(state: SessionState, prompt: Prompt): Calls[] {
 }
 
 /**
- * Whether a prompt's call is still waiting, as the transcript says (0.32.2): its tool_use, found by the prompt's key
- * (else the agent's newest call of the same tool), with no tool_result yet. Claude Code writes a call it denies by
- * itself with its refusal at once, and one that ran with what it gave. A call not found is taken as waiting: better a
- * card for a dialog nobody needs than none for one that waits. Null when the file can't be read.
+ * Whether a prompt's call is still waiting, as the transcript says (0.32.2): its own tool_use, found by the prompt's key
+ * (the tool, its input and the agent), with no tool_result yet. Claude Code writes a call it denies by itself with its
+ * refusal at once, and one that ran with what it gave.
+ *
+ * Since 0.34.2 only the prompt's own call counts. Claude Code (2.1.295) writes a prompted call to the transcript only
+ * once its dialog is answered, and nothing about it while the dialog is open, so the open call isn't there at all. Its
+ * agent's newest call of the same tool, which 0.32.2 fell back on, is then an earlier one, answered: a second Bash's
+ * dialog on screen was settled with no card. The same key can be an earlier call too (the same command asked again, or
+ * a tool whose prompt is the tool's whatever the input), so a match whose result was written before the prompt was
+ * asked is that earlier call and is passed over. A call denied by itself is written with its refusal after the hook
+ * ran, so it's found and answered. A call not found is taken as waiting: better a card for a dialog nobody needs (a
+ * refused call whose input reads differently in the transcript) than none for one that waits. Null when the file
+ * can't be read.
  */
 async function callState(calls: Calls, prompt: Prompt): Promise<'waiting' | 'answered' | null> {
   let file: Awaited<ReturnType<typeof open>>
@@ -1196,9 +1255,9 @@ async function callState(calls: Calls, prompt: Prompt): Promise<'waiting' | 'ans
     const size = (await file.stat()).size
     let position = size
     let carry = Buffer.alloc(0)
-    // Read from the end: a call's result comes after it, so each result is known before its call.
-    const results = new Set<string>()
-    let sameTool: string | null = null
+    // Read from the end: a call's result comes after it, so each result is known before its call, with when it was
+    // written (NaN when the transcript doesn't say).
+    const results = new Map<string, number>()
     let found: 'waiting' | 'answered' | null = null
     const read = (line: string) => {
       if (!line.includes('tool_')) return
@@ -1214,12 +1273,17 @@ async function callState(calls: Calls, prompt: Prompt): Promise<'waiting' | 'ans
       for (const block of [...blocks].reverse()) {
         if (!isObject(block)) continue
         const id = text(block.tool_use_id) || text(block.id)
-        if (block.type === 'tool_result' && id) results.add(id)
-        else if (block.type === 'tool_use' && entry.type === 'assistant' && found === null) {
-          const tool = text(block.name)
-          if (promptKey(tool, block.input, prompt.agent) === prompt.key)
-            found = results.has(id) ? 'answered' : 'waiting'
-          else if (sameTool === null && prompt.tool && tool === prompt.tool) sameTool = id
+        if (block.type === 'tool_result' && id) results.set(id, Date.parse(text(entry.timestamp)))
+        else if (
+          block.type === 'tool_use' &&
+          entry.type === 'assistant' &&
+          found === null &&
+          promptKey(text(block.name), block.input, prompt.agent) === prompt.key
+        ) {
+          const answered = results.get(id)
+          // Answered before the prompt was asked: an earlier call with the same key, never this one.
+          if (answered === undefined) found = 'waiting'
+          else if (!(answered < prompt.at)) found = 'answered'
         }
       }
     }
@@ -1238,9 +1302,7 @@ async function callState(calls: Calls, prompt: Prompt): Promise<'waiting' | 'ans
       carry = buffer
     }
     if (found === null && position === 0) read(carry.toString('utf8'))
-    if (found !== null) return found
-    if (sameTool !== null) return results.has(sameTool) ? 'answered' : 'waiting'
-    return 'waiting'
+    return found ?? 'waiting'
   } catch {
     return null
   } finally {
@@ -1446,6 +1508,8 @@ async function post(
   const kept = await record(io, state.session, worker, (state) => {
     state.card = card
     state.areaId = areaId
+    // Its dialog was relayed while it was posted (0.34.1): the relayed card takes its place.
+    markMoving(state)
   })
   if (!kept) await withdraw(io, client, card, state, 'answered').catch(() => {})
 }
@@ -1591,17 +1655,26 @@ async function update(
   }
   const version = typeof result.version === 'number' ? result.version : card.version + 1
   await record(io, state.session, worker, (state) => {
-    if (state.card?.requestId === card.requestId) state.card = { ...card, version, key: prompt.key }
+    if (state.card?.requestId === card.requestId) {
+      const { moving: _, ...shown } = card
+      state.card = { ...shown, version, key: prompt.key }
+    }
   })
 }
 
-/** Withdraws a card: answered in Claude Code (answeredHere), or the session ended before anyone answered. */
+/** Why the session's card goes when its dialog has a relayed card now (0.34.1). */
+const MOVED = 'It has a card of its own now, with Allow and Deny.'
+
+/**
+ * Withdraws a card: answered in Claude Code (answeredHere), the session ended before anyone answered, or (0.34.1) its
+ * dialog has a relayed card now.
+ */
 async function withdraw(
   io: Io,
   client: McpClient,
   card: Card,
   state: SessionState,
-  how: 'answered' | 'ended',
+  how: 'answered' | 'ended' | 'moved',
 ): Promise<void> {
   const machine = await computerOf(io, state.origin, appOf(state))
   try {
@@ -1609,12 +1682,14 @@ async function withdraw(
       requestId: card.requestId,
       name: card.name,
       reason:
-        how === 'answered'
-          ? cut(`Answered in ${APP_NAMES[appOf(state)]} on ${machine}.`, 200)
-          : cut(
-              `That ${APP_NAMES[appOf(state)]} session on ${machine} ended, so it isn’t waiting any more.`,
-              200,
-            ),
+        how === 'moved'
+          ? MOVED
+          : how === 'answered'
+            ? cut(`Answered in ${APP_NAMES[appOf(state)]} on ${machine}.`, 200)
+            : cut(
+                `That ${APP_NAMES[appOf(state)]} session on ${machine} ended, so it isn’t waiting any more.`,
+                200,
+              ),
       ...(how === 'answered' ? { answeredHere: true } : {}),
     })
   } catch (error) {
@@ -1743,7 +1818,13 @@ export async function permissionWorker(
           })
         } else {
           const card = state.card as Card
-          await withdraw(io, client, card, state, state.settled ?? 'answered')
+          await withdraw(
+            io,
+            client,
+            card,
+            state,
+            plan.moved ? 'moved' : (state.settled ?? 'answered'),
+          )
           await record(io, session, worker, (state) => {
             if (state.card?.requestId === card.requestId) delete state.card
           })
@@ -1875,6 +1956,7 @@ export async function recordRelay(
       if (!state || !prompt) return state
       prompt.relay = heard.relay
       delete prompt.failed
+      relayed(state)
       matched = true
       delete state.settled
       worker = claim(state, io.now())
@@ -1907,6 +1989,7 @@ export async function recordRelay(
     }
     if (next.prompts.some((each) => each.relay?.id === heard.relay.id)) return next
     next.prompts.push(prompt)
+    relayed(next)
     keepNewest(next)
     delete next.settled
     next.at = now

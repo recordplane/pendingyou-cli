@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.34.2 (2026-10-09)
+
+- Fixed: in bypassPermissions or dontAsk mode, a Claude Code dialog for a tool its agent had used before (a subagent's
+  second Bash) could get no card. Claude Code writes a prompted call to its transcript only once its dialog is
+  answered, so 20 seconds in the check for an unanswered call found the agent's earlier call of the same tool,
+  answered, and settled the prompt. Now only the prompt's own call counts: not in the transcript yet, it's still
+  waiting and its card goes up; the same command answered before the prompt was asked is an earlier call and doesn't
+  count; a call Claude Code denied by itself is written with its refusal at once, so it still gets no card. A
+  Notification picks the prompt it shows the same way, so it names the second call rather than putting up a card in
+  Claude Code's words.
+
+## 0.34.1 (2026-10-09)
+
+- Fixed: a Claude Code permission prompt answered through the permission channel (`npx pendingyou claude`) could get
+  two cards, the relayed one with **Allow** and **Deny** and the old button-less “Claude Code is waiting for your OK”
+  one. It happened to any tool the session had used before (a second Write): Claude Code writes a prompted call to its
+  transcript only once it's answered, so the Notification hook, six seconds into the dialog, found the earlier call
+  answered, took the dialog for one nothing explained and put up a card for it. A relayed prompt now counts as on
+  screen, a Notification adds nothing while one is open, and a button-less card already up for a relayed dialog is
+  withdrawn as the relayed card goes up at once (“It has a card of its own now, with Allow and Deny.”).
+
 ## 0.34.0 (2026-10-09)
 
 - Codex can ask on your phone first. `npx pendingyou codex-answers --wait <minutes>` (0 to 10; 0, the default, is off)
