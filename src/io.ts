@@ -50,6 +50,12 @@ export interface Io {
       signal?: AbortSignal
     },
   ): Promise<number>
+  /**
+   * Runs a program in this terminal, as if it had been run instead of this one (0.33.0: `pendingyou claude`): stdin,
+   * stdout and stderr its own, the terminal's Ctrl-C its own too, this environment. Resolves with its exit code (127
+   * when it isn't installed).
+   */
+  handOver?(command: string, args: readonly string[]): Promise<number>
   /** Opens a page in the person's browser; false when it couldn't. */
   openBrowser(url: string): Promise<boolean>
   /**
@@ -168,6 +174,34 @@ export function execProgram(
     child.on('close', (code) => done(timedOut ? 124 : (code ?? 1)))
     child.stdin?.on('error', () => {})
     child.stdin?.end(options.stdin)
+  })
+}
+
+/** While a program has the terminal (handOver): where this process's own signals go instead of stopping it. */
+let handedTo: ((signal: NodeJS.Signals) => void) | null = null
+
+function handOver(command: string, args: readonly string[]): Promise<number> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(command, [...args], { stdio: 'inherit' })
+    } catch {
+      resolve(127)
+      return
+    }
+    // The terminal's Ctrl-C reaches it as it reaches this process (the same process group); a signal sent to this
+    // process alone is passed on.
+    handedTo = (signal) => {
+      if (signal !== 'SIGINT') child.kill(signal)
+    }
+    const done = (code: number) => {
+      handedTo = null
+      resolve(code)
+    }
+    child.on('error', (error: NodeJS.ErrnoException) => done(error.code === 'ENOENT' ? 127 : 1))
+    child.on('exit', (code, signal) =>
+      done(code ?? (signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 1)),
+    )
   })
 }
 
@@ -337,6 +371,7 @@ export function realIo(): Io {
   // exits at once.
   for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const)
     process.on(name, () => {
+      if (handedTo) return handedTo(name)
       if (controller.signal.aborted) process.exit(130)
       controller.abort()
     })
@@ -354,6 +389,7 @@ export function realIo(): Io {
     ask,
     run: runProgram,
     exec: execProgram,
+    handOver,
     openBrowser,
     readStdin,
     lines: () => lines(controller.signal, () => controller.abort()),

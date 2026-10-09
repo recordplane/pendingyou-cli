@@ -330,6 +330,20 @@ export function redactText(text: string, max = SUMMARY_MAX): string {
   return cut(tidy(redactTokens(redactSchemes(redactHeaders(redactUrls(text))))), max)
 }
 
+/**
+ * The whole of a text with its secrets masked, and nothing else changed (0.33.0: a relayed permission prompt's input, on
+ * its card in full, PA2): every masking redactCommand does, on every line, but never cut, never folded to its first
+ * word, its lines and spaces kept.
+ */
+export function maskSecrets(text: string): string {
+  return text
+    .split('\n')
+    .map((line) =>
+      redactTokens(redactFlags(redactNamedValues(redactSchemes(redactHeaders(redactUrls(line)))))),
+    )
+    .join('\n')
+}
+
 /** A shell or an interpreter given its code on the command line: `bash -c …`, `node -e …`, `python3 -c …`. */
 const INLINE_CODE =
   /(?:^|[\s;&|(`$/])(?:(?:ba|z|da|k)?sh|fish|python[0-9.]*|node(?:js)?|deno|bun|ruby|perl|php|osascript|pwsh|powershell|lua|Rscript)\b[^;&|]*?\s(?:-c|-e|-E|--eval|-p|--print|-r|-Command|-command|-EncodedCommand)(?=\s|=|$)/i

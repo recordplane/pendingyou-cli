@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.34.0 (2026-10-09)
+
+- Codex can ask on your phone first. `npx pendingyou codex-answers --wait <minutes>` (0 to 10; 0, the default, is off)
+  has Codex's permission prompts go to your Pending You card at once, with **Allow** and **Deny** and the whole command
+  or patch, its secrets masked. Codex shows nothing while its hook waits, so tap one and Codex goes on, or is refused
+  (“Denied in Pending You.”); with no answer within the wait, the card is withdrawn and Codex asks in its terminal as
+  usual. It sets the PermissionRequest hook's timeout in Codex's hooks.json to the wait plus 30 seconds (Codex sets no
+  upper limit for that hook), which changes the hook: trust it again in Codex's `/hooks`, as the command says. `init`
+  names the setting when it sets Codex up and keeps it, `status` shows it, and `uninstall` clears it. Needs Pending You
+  with `permissionPrompt` (0.33.0's server).
+
+## 0.33.0 (2026-10-09)
+
+- Answer Claude Code's permission prompts on their Pending You card. Start Claude Code with `npx pendingyou claude
+  [args…]` (it runs `claude --dangerously-load-development-channels server:pendingyou-permissions [args…]`) and a
+  prompt left waiting gets a card with **Allow** and **Deny** and the whole input, its secrets masked, instead of a
+  card that only says where to answer. The terminal dialog stays open: whichever answer comes first wins, and Allow is
+  for that one call only. `init` registers the channel (`pendingyou channel --app claude-code`, a stdio MCP server that
+  sends nothing to the model) at user scope through the hooks' shim, beside the permission-prompt hooks, on Claude
+  Code 2.1.234 or later; `uninstall` and `--no-permission-cards` take it out; `status` says whether it's there. The card
+  still waits the same 10 seconds, so a prompt answered at the terminal gets none; answered there later, the card goes
+  as before. A session started with plain `claude` keeps today's card, which now says it's a permission
+  prompt's (`permissionPrompt` with `relay: false`). Needs Pending You with `post_request`'s `permissionPrompt`
+  (deploy the server first). Claude Code warns about the development channel at each start until
+  the channel is on its allowlist.
+
 ## 0.32.3 (2026-10-09)
 
 - Claude Code's and Codex's permission prompts get their cards. The worker posted each card without `context`, which

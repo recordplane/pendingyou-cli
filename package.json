@@ -1,6 +1,6 @@
 {
   "name": "pendingyou",
-  "version": "0.32.3",
+  "version": "0.34.0",
   "description": "Pending You for your coding agents: one command sets up Claude Code, Codex, OpenCode and Pi to ask you through Pending You and hear your answers, even while they sit idle.",
   "license": "Apache-2.0",
   "homepage": "https://www.pendingyou.com",

@@ -21,6 +21,7 @@ import { rm, rmdir, stat } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import type { Step } from './apps/types.ts'
 import { DEFAULT_ORIGIN } from './args.ts'
+import { CHANNEL, CHANNEL_CLAUDE } from './channel.ts'
 import { PlainError } from './errors.ts'
 import { claudeDir, configDir, readJson, readText, writeWhole } from './files.ts'
 import { findHook, type HookSpec, hooksOf, mergeHooks, originArgs, removeHooks } from './hooks.ts'
@@ -51,7 +52,7 @@ import {
 import { removePermissionFiles } from './permission.ts'
 import { removePresenceFiles } from './presence.ts'
 import { helperPath } from './remote.ts'
-import { readShim, SHIM } from './shim.ts'
+import { readShim, SHIM, shimPath } from './shim.ts'
 import { VERSION } from './version.ts'
 
 export type { Step } from './apps/types.ts'
@@ -137,6 +138,8 @@ export interface Manifest {
    */
   permissionHooks?: Record<string, string> | null
   permissionCards?: boolean
+  /** init registered the permission channel (0.33.0, channel.ts), so uninstall takes it out. */
+  channel?: boolean
 }
 
 export const settingsPath = (io: Pick<Io, 'env' | 'home'>) => join(claudeDir(io), 'settings.json')
@@ -374,6 +377,137 @@ export function helperServer(url: string, command: string) {
     args: ['mcp', 'add-json', '--scope', 'user', MCP_NAME, json],
     text: `claude mcp add-json --scope user ${MCP_NAME} ${quote(json)}`,
   }
+}
+
+/**
+ * The permission channel's entry in Claude Code's MCP servers (0.33.0, channel.ts): the hooks' shim, whose path never
+ * changes, so an upgrade never changes it; `--origin` off production.
+ */
+export function channelEntry(io: Pick<Io, 'env' | 'home'>, origin: string) {
+  return {
+    type: 'stdio',
+    command: shimPath(io),
+    args: [
+      'channel',
+      '--app',
+      'claude-code',
+      ...(origin === DEFAULT_ORIGIN ? [] : ['--origin', origin]),
+    ],
+  }
+}
+
+/**
+ * The permission channel as ~/.claude.json has it (read only, as mcpFromFile): its entry, null when there's none, or
+ * 'unknown' when the file can't say.
+ */
+export async function channelFromFile(
+  io: Pick<Io, 'env' | 'home'>,
+): Promise<Json | null | 'unknown'> {
+  let parsed: unknown
+  try {
+    const text = await readText(claudeJsonPath(io))
+    if (text === null) return 'unknown'
+    parsed = JSON.parse(text)
+  } catch {
+    return 'unknown'
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return 'unknown'
+  const servers = objectAt(parsed as Json, 'mcpServers')
+  return servers ? objectAt(servers, CHANNEL) : null
+}
+
+/** Whether a channel entry runs exactly what `wanted` does. */
+const sameEntry = (entry: Json, wanted: ReturnType<typeof channelEntry>) =>
+  entry.command === wanted.command && JSON.stringify(entry.args) === JSON.stringify(wanted.args)
+
+/**
+ * The permission channel in Claude Code (0.33.0): registered at user scope (`claude mcp add-json`) when `wanted`, one
+ * that runs something else replaced; taken out when not wanted and init had registered it. Its step, or null when there
+ * was nothing to say; and whether it's registered now.
+ */
+async function applyChannel(
+  io: Io,
+  origin: string,
+  wanted: boolean,
+  before: Manifest | null,
+  progress: (text: string) => void,
+): Promise<{ step: Step | null; registered: boolean }> {
+  const entry = channelEntry(io, origin)
+  const now = await channelFromFile(io)
+  const remove = () =>
+    io.run('claude', ['mcp', 'remove', '--scope', 'user', CHANNEL], MCP_TIMEOUT_MS)
+  if (!wanted) {
+    if (!before?.channel || now === null) return { step: null, registered: false }
+    progress('Removing the permission channel from Claude Code (this can take a minute)…\n')
+    const removed = await remove()
+    return removed.code === 0
+      ? {
+          step: { ok: true, text: `Took out the permission channel (${CHANNEL}).` },
+          registered: false,
+        }
+      : {
+          step: {
+            ok: false,
+            text: `Couldn’t take out the permission channel. Run: claude mcp remove --scope user ${CHANNEL}`,
+          },
+          registered: true,
+        }
+  }
+  if (now !== null && now !== 'unknown' && sameEntry(now, entry))
+    return {
+      step: { ok: true, text: 'The permission channel was already registered.' },
+      registered: true,
+    }
+  const json = JSON.stringify(entry)
+  const add = `claude mcp add-json --scope user ${CHANNEL} ${quote(json)}`
+  if (now !== null && now !== 'unknown') {
+    progress('Updating the permission channel in Claude Code (this can take a minute)…\n')
+    if ((await remove()).code !== 0)
+      return {
+        step: {
+          ok: false,
+          text: `Couldn’t update the permission channel. Run:\n  claude mcp remove --scope user ${CHANNEL}\n    ${add}`,
+        },
+        registered: false,
+      }
+  } else progress('Adding the permission channel to Claude Code (this can take a minute)…\n')
+  const added = await io.run(
+    'claude',
+    ['mcp', 'add-json', '--scope', 'user', CHANNEL, json],
+    MCP_TIMEOUT_MS,
+  )
+  if (added.code !== 0)
+    return {
+      step: { ok: false, text: `Claude Code didn’t add the permission channel. Run: ${add}` },
+      registered: false,
+    }
+  return {
+    step: {
+      ok: true,
+      text: `Added the permission channel (${CHANNEL}): start Claude Code with npx pendingyou claude and a prompt’s card has Allow and Deny. The first answer wins, there or in the terminal.`,
+    },
+    registered: true,
+  }
+}
+
+/**
+ * `pendingyou claude [args…]` (0.33.0, PA4): Claude Code with the permission channel loaded, its arguments after the
+ * channel's flag, in this terminal, its exit code passed on. Claude Code shows its warning about development channels
+ * each start until the channel is on its allowlist (the plan's §6).
+ */
+export async function claudeWithChannel(io: Io, args: readonly string[]): Promise<number> {
+  if (!io.handOver) throw new PlainError('This can’t start Claude Code here.')
+  if ((await channelFromFile(io)) === null)
+    io.err(
+      'pendingyou: the permission channel isn’t set up, so Claude Code’s prompts get no Allow or Deny on their cards. Run: npx pendingyou@latest init\n',
+    )
+  const code = await io.handOver('claude', [
+    '--dangerously-load-development-channels',
+    `server:${CHANNEL}`,
+    ...args,
+  ])
+  if (code === 127) io.err('pendingyou: Claude Code isn’t installed here (no claude on PATH).\n')
+  return code
 }
 
 /**
@@ -632,6 +766,17 @@ export async function installClaude(
         ? `${merged.permissionChanged ? 'Took out the permission-prompt hooks' : 'Left out the permission-prompt hooks'}, as you asked: no card when Claude Code waits for your OK. To turn them on: npx pendingyou init --permission-cards${flag}`
         : `${merged.permissionChanged ? 'Took out' : 'Left out'} the permission-prompt hooks: ${blocker}.`,
   })
+  // The permission channel (0.33.0): with the permission-prompt hooks, on a Claude Code that relays prompts only to
+  // channels a session opted in.
+  const found = claudeVersion(options.version)
+  const channel = await applyChannel(
+    io,
+    origin,
+    Boolean(permissionLines) && found !== null && atLeast(found, CHANNEL_CLAUDE),
+    before,
+    options.progress,
+  )
+  if (channel.step) report(channel.step)
   const mod = await addMod(io, merged.settings, options.copy, options.version)
   if (mod.step) report(mod.step)
   if (merged.changed || mod.changed) await writeSettings(io, mod.settings)
@@ -655,6 +800,7 @@ export async function installClaude(
     ...(options.plugin ? { plugin: true } : {}),
     permissionHooks: permissionLines,
     permissionCards: wanted,
+    ...(channel.registered ? { channel: true } : {}),
   }
   await writeWhole(manifestPath(io), `${JSON.stringify(manifest, null, 2)}\n`, { secret: true })
   return steps
@@ -748,6 +894,23 @@ export async function uninstallClaude(io: Io): Promise<Step[]> {
   await removePresenceFiles(io, 'claude-code')
   const skill = await removeSkill(manifest?.skill ?? null)
   if (skill) steps.push(skill)
+  // The permission channel (0.33.0), when init registered it and it's still there.
+  if (manifest?.channel && (await channelFromFile(io)) !== null) {
+    io.out('Removing the permission channel from Claude Code (this can take a minute)…\n')
+    const result = await io.run(
+      'claude',
+      ['mcp', 'remove', '--scope', 'user', CHANNEL],
+      MCP_TIMEOUT_MS,
+    )
+    steps.push(
+      result.code === 0
+        ? { ok: true, text: `Removed the permission channel (${CHANNEL}) from Claude Code.` }
+        : {
+            ok: false,
+            text: `Couldn’t remove the permission channel. Run: claude mcp remove --scope user ${CHANNEL}`,
+          },
+    )
+  }
   if (manifest?.mcpAdded) {
     io.out('Removing the pendingyou MCP server from Claude Code (this can take a minute)…\n')
     const result = await io.run(
@@ -792,6 +955,8 @@ export async function claudeState(io: Io): Promise<{
   notify: boolean
   /** The session-end hook (0.15.0): presence says closed. */
   presence: boolean
+  /** The permission channel (0.33.0): registered in ~/.claude.json, or 'unknown' when that can't be read. */
+  channel: boolean | 'unknown'
   /** How the session-start hook runs pendingyou, and whether what it runs is still there. */
   form: (HookForm & { runs: boolean; shim: boolean }) | null
   /**
@@ -845,6 +1010,9 @@ export async function claudeState(io: Io): Promise<{
     permission,
     notify,
     presence: Boolean(ours('SessionEnd')),
+    channel: await channelFromFile(io).then((entry) =>
+      entry === 'unknown' ? 'unknown' : entry !== null,
+    ),
     form: form ? { ...form, runs: await hookRuns(form), shim } : null,
     mod,
     plugins,

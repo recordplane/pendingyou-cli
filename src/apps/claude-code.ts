@@ -12,6 +12,7 @@
 //   that only hears; kept beside the plugin, no skill is saved either: the plugin carries it.
 // - one at another Pending You: replaced once the person says so (or `--yes`), or else Claude Code is left alone.
 
+import { CHANNEL_CLAUDE } from '../channel.ts'
 import {
   addCommand,
   type ClaudeInstall,
@@ -41,7 +42,7 @@ import {
   unwokenLines,
   unwokenSessions,
 } from '../loaded.ts'
-import { claudeVersion, isOurModDir, loadsMods, MOD_CLAUDE } from '../mod.ts'
+import { atLeast, claudeVersion, isOurModDir, loadsMods, MOD_CLAUDE } from '../mod.ts'
 import {
   checkHelper,
   foundBy,
@@ -305,6 +306,27 @@ function permissionLine(
 }
 
 /**
+ * status's line for the permission channel (0.33.0, channel.ts): Allow and Deny on a prompt's card, in a session started
+ * with `pendingyou claude`. Only beside the permission-prompt hooks; never a reason status isn't Ready.
+ */
+function channelLine(claude: Awaited<ReturnType<typeof claudeState>>, flag: string): string[] {
+  if (!claude.permission || claude.channel === 'unknown') return []
+  const label = 'Permission answers:'
+  if (claude.channel)
+    return [
+      `  ok      ${label} start Claude Code with npx pendingyou claude, and a prompt’s card has Allow and Deny`,
+    ]
+  const version = claude.claude ? claudeVersion(claude.claude) : null
+  if (!version || !atLeast(version, CHANNEL_CLAUDE))
+    return [
+      `          ${label} Allow and Deny on a prompt’s card need Claude Code ${CHANNEL_CLAUDE} or later${version ? ` (this is ${version})` : ''}`,
+    ]
+  return [
+    `  missing ${label} no Allow or Deny on a prompt’s card; run npx pendingyou@latest init${flag}`,
+  ]
+}
+
+/**
  * status's line for presence (0.15.0, presence.ts): whether Pending You hears when a session here is open. Never a
  * reason status isn't Ready.
  */
@@ -454,6 +476,7 @@ async function claudeStatus(io: Io, ctx: StatusContext): Promise<AppStatus> {
     `  ${mark(claude.stopcheck)} Stop check: ${claude.stopcheck ? 'asks Claude Code to post what it leaves you in chat' : `not installed; run npx pendingyou init${flag}`}`,
     `  ${mark(modOk)} Wake mod: ${modText}`,
     permissionLine(io, claude, manifest, helper, flag),
+    ...channelLine(claude, flag),
     presenceLine(claude, helper && connected, modOk, flag),
   )
   // How setup stands on Pending You (from servers that say): never a reason it isn't Ready.

@@ -37,9 +37,11 @@ import { createHash } from 'node:crypto'
 import { realpath, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { removeSkill, saveSkill } from '../claude.ts'
+import { codexManifestPath, isAnswerWait, minutes, permissionTimeout } from '../codex-answers.ts'
 import { readCredential } from '../credentials.ts'
 import { configDir, readJson, readText, writeWhole } from '../files.ts'
 import {
+  findHook,
   type HookGroup,
   type HookSpec,
   isOurHook,
@@ -141,6 +143,14 @@ export const CODEX_PERMISSION_HOOKS: readonly HookSpec[] = [
   { event: 'PermissionRequest', sub: 'permission' },
   { event: 'PostToolUse', sub: 'permission-done' },
 ]
+/**
+ * The permission-prompt hooks for this computer's wait (0.34.0, codex-answers.ts): with one, Codex gives the
+ * PermissionRequest hook the wait and a margin to answer in; without, its usual HOOK_TIMEOUT.
+ */
+export const codexPermissionHooks = (wait: number): HookSpec[] =>
+  CODEX_PERMISSION_HOOKS.map((spec) =>
+    spec.event === 'PermissionRequest' ? { ...spec, timeout: permissionTimeout(wait) } : spec,
+  )
 /** Presence (0.15.0, presence.ts): the thread closed. Codex gives a SessionEnd hook 1 second unless it says, 3 at most. */
 export const CODEX_PRESENCE_HOOKS: readonly HookSpec[] = [
   { event: 'SessionEnd', sub: 'presence', timeout: 3 },
@@ -189,6 +199,11 @@ export interface CodexManifest {
    * --no-permission-cards`, which later runs keep until `--permission-cards`.
    */
   permissionCards?: boolean
+  /**
+   * How many minutes Codex's permission prompts wait for an answer on their card before Codex asks in its terminal
+   * (0.34.0, `npx pendingyou codex-answers --wait <minutes>`): none or 0 is off.
+   */
+  answerWait?: number
 }
 
 /** Codex's own folder: $CODEX_HOME (as Codex resolves it) or ~/.codex. */
@@ -201,7 +216,7 @@ const configPath = async (io: Pick<Io, 'env' | 'home'>) => join(await codexHome(
 const hooksPath = async (io: Pick<Io, 'env' | 'home'>) => join(await codexHome(io), 'hooks.json')
 export const codexSkillPath = (io: Pick<Io, 'home'>) =>
   join(io.home, '.agents', 'skills', 'pendingyou', 'SKILL.md')
-const manifestPath = (io: Pick<Io, 'env' | 'home'>) => join(configDir(io), 'codex.json')
+const manifestPath = codexManifestPath
 
 export const readCodexManifest = (io: Pick<Io, 'env' | 'home'>) =>
   readJson<CodexManifest>(manifestPath(io)).catch(() => null)
@@ -434,6 +449,71 @@ function keepTheirTrust(config: string, file: string, before: Json): string {
   return next
 }
 
+/** What init says of the wait (0.34.0): what it does, and the command that sets it. */
+export function answerWaitWords(wait: number): string {
+  return wait > 0
+    ? `Ask on your phone first: Codex’s permission prompts wait up to ${minutes(wait)} for Allow or Deny on their Pending You card, then Codex asks in its terminal (npx pendingyou codex-answers --wait 0 turns it off).`
+    : 'Ask on your phone first is off: Codex asks for your OK in its terminal at once. To have it put each permission prompt on your Pending You card first, with Allow and Deny, and wait up to 2 minutes for you there: npx pendingyou codex-answers --wait 2'
+}
+
+/**
+ * `pendingyou codex-answers --wait <minutes>` (0.34.0, PA7): sets how long Codex's permission prompts wait for an answer
+ * on their card (0 turns it off), and gives Codex's PermissionRequest hook a timeout to fit. A changed timeout changes
+ * the hook's definition, which Codex runs only once the person trusts it again: it says how.
+ */
+export async function setAnswerWait(io: Io, options: { wait: number }): Promise<number> {
+  const { wait } = options
+  const manifest = await readCodexManifest(io)
+  if (!manifest) {
+    io.err(
+      'Codex isn’t set up on this computer yet: run npx pendingyou init --app codex, then this again.\n',
+    )
+    return 1
+  }
+  const file = await readHooksFile(io)
+  if ('invalid' in file) {
+    io.err(`${file.invalid}\n`)
+    return 1
+  }
+  const hooks =
+    file.json.hooks && typeof file.json.hooks === 'object' && !Array.isArray(file.json.hooks)
+      ? (file.json.hooks as Json)
+      : {}
+  const hook = findHook(hooks, 'PermissionRequest', 'permission')
+  if (manifest.permissionCards === false || typeof hook?.command !== 'string') {
+    io.err(
+      'Codex’s permission-prompt hooks aren’t installed here, so nothing can ask you first: run npx pendingyou init --app codex --permission-cards, then this again.\n',
+    )
+    return 1
+  }
+  const spec = codexPermissionHooks(wait).find(
+    (each) => each.event === 'PermissionRequest',
+  ) as HookSpec
+  const merged = mergeHooks(hooks, [spec], { [lineKey(spec)]: hook.command }, file.path)
+  if (merged.changed)
+    await writeWhole(
+      file.path,
+      `${JSON.stringify({ ...file.json, hooks: merged.hooks }, null, 2)}\n`,
+    )
+  const next: CodexManifest = { ...manifest }
+  if (wait > 0) next.answerWait = wait
+  else delete next.answerWait
+  await writeWhole(manifestPath(io), `${JSON.stringify(next, null, 2)}\n`, { secret: true })
+  io.out(
+    wait > 0
+      ? `Codex’s permission prompts now go to your Pending You card first, with Allow and Deny, and wait up to ${minutes(wait)} for you there; with no answer by then, Codex asks in its terminal as usual. Codex shows nothing while it waits.\n`
+      : 'Turned off: Codex asks for your OK in its terminal at once again, and its card only says so.\n',
+  )
+  if (!merged.changed) {
+    io.out('That was already the setting.\n')
+    return 0
+  }
+  io.out(
+    `\nGave Codex’s PermissionRequest hook ${spec.timeout} seconds in ${file.path}: a changed hook, which Codex skips until you trust it again.\n${trustSteps(await findCodex(io)).join('\n')}\n`,
+  )
+  return 0
+}
+
 export const codex: AppModule = {
   id: 'codex',
   name: NAME,
@@ -601,12 +681,15 @@ export const codex: AppModule = {
         // thread is open; the permission ones unless the person turned them off, here or before.
         const cards = ctx.permissionCards ?? before?.permissionCards !== false
         const extra = mode === 'helper' && ictx.helper !== null
+        // The wait set with codex-answers (0.34.0) is kept, and its timeout with it.
+        const wait = isAnswerWait(before?.answerWait) ? before.answerWait : 0
         const wanted = [
           ...CODEX_HOOKS,
-          ...(extra && cards ? CODEX_PERMISSION_HOOKS : []),
+          ...(extra && cards ? codexPermissionHooks(wait) : []),
           ...(extra ? CODEX_PRESENCE_HOOKS : []),
         ]
-        const unwanted = ALL_CODEX_HOOKS.filter((spec) => !wanted.includes(spec))
+        const wantedKeys = new Set(wanted.map(lineKey))
+        const unwanted = ALL_CODEX_HOOKS.filter((spec) => !wantedKeys.has(lineKey(spec)))
         const lines = Object.fromEntries(
           wanted.map((spec) => [lineKey(spec), ictx.hookLine(spec.sub)]),
         )
@@ -644,6 +727,8 @@ export const codex: AppModule = {
                   ? `Took out Codex’s permission-prompt hooks, as you asked: no card when Codex waits for your OK. To turn them on: npx pendingyou init --app codex --permission-cards${originArgs(ictx.origin)}`
                   : 'Codex’s hooks were already installed.',
             })
+            // Ask on your phone first (0.34.0, PA7): named once, with the command that sets it.
+            if (extra && cards) report({ ok: true, text: answerWaitWords(wait) })
           } catch (error) {
             report({
               ok: false,
@@ -668,6 +753,7 @@ export const codex: AppModule = {
           helper: mode === 'helper' ? ictx.helper : null,
           setup: { since: new Date(io.now()).toISOString() },
           permissionCards: cards,
+          ...(wait > 0 ? { answerWait: wait } : {}),
         }
         await writeWhole(manifestPath(io), `${JSON.stringify(manifest, null, 2)}\n`, {
           secret: true,
@@ -838,6 +924,15 @@ export const codex: AppModule = {
           ? `off, as you chose; for a card when Codex waits for your OK, run npx pendingyou init --app codex --permission-cards${flag}`
           : null,
     )
+    const wait = isAnswerWait(manifest?.answerWait) ? manifest.answerWait : 0
+    const askFirst =
+      ownConnection && manifest?.permissionCards !== false
+        ? `          Ask on your phone first: ${
+            wait > 0
+              ? `${minutes(wait)}: a permission prompt waits that long for Allow or Deny on its card, then Codex asks in its terminal (npx pendingyou codex-answers --wait 0 turns it off)`
+              : 'off: Codex asks in its terminal at once (npx pendingyou codex-answers --wait 2 sends its prompts to your card first, for up to 2 minutes)'
+          }`
+        : null
     const presenceText = extraLine(
       'Presence:',
       'tells Pending You when this session is open',
@@ -864,6 +959,7 @@ export const codex: AppModule = {
       `  ${mark(skill !== null)} Skill: ${skill !== null ? `saved (${codexSkillPath(io)})` : `not saved; run npx pendingyou init --app codex${flag}`}`,
       `  ${mark(hooksOk)} Hooks: ${hooksText}`,
       permissionText,
+      ...(askFirst ? [askFirst] : []),
       presenceText,
       `  ${mark(wakes)} Wake: ${
         wakes

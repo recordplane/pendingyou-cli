@@ -5,6 +5,7 @@
 // Since 0.11.0 most commands take `--app <id>` (apps/ids.ts): the hooks run for one app's sessions, and each app has
 // its own sign-in. A command that names none acts for Claude Code, as every command did before.
 import { APP_IDS, APP_NAMES, type AppId, DEFAULT_APP, isAppId } from './apps/ids.ts'
+import { ANSWER_WAIT_MAX } from './codex-answers.ts'
 
 export const DEFAULT_ORIGIN = 'https://www.pendingyou.com'
 /** How long `hold` waits for an answer before it lets go (4 hours). */
@@ -89,6 +90,11 @@ export type Command =
       permissionCards?: boolean
     }
   | { name: 'watch'; origin: string; command: string[]; once: boolean }
+  /**
+   * Codex's "ask on my phone first" (0.34.0, codex-answers.ts): how many minutes its permission prompts wait for an
+   * answer on their card before Codex asks in its terminal; 0 turns it off.
+   */
+  | { name: 'codex-answers'; wait: number }
   | { name: 'uninstall'; origin: string; apps?: AppId[] }
   | { name: 'refresh'; origin: string; force: boolean; app?: AppId }
   | { name: 'mcp-headers'; origin: string; check: boolean; app?: AppId }
@@ -97,6 +103,13 @@ export type Command =
    * `check`: say which Node runs it, as the helper's check does.
    */
   | { name: 'mcp'; origin: string; app?: AppId; check: boolean }
+  /**
+   * The permission channel (0.33.0, channel.ts): the stdio MCP server Claude Code relays its permission prompts to, in
+   * a session started with `pendingyou claude`.
+   */
+  | { name: 'channel'; origin: string; app?: AppId }
+  /** Claude Code with the permission channel on (0.33.0): `claude` with these arguments after the channel's flag. */
+  | { name: 'claude'; args: string[] }
   /**
    * Herdr (0.17.0, herdr.ts and herdr/command.ts): `report` writes an agent's badges onto its Herdr pane (what the
    * agents' hooks and the wake mod run); the rest are what the Pending You plugin for Herdr runs.
@@ -272,6 +285,9 @@ const COMMANDS = new Set([
   'herdr',
   'machine',
   'app',
+  'channel',
+  'claude',
+  'codex-answers',
 ])
 
 /** Flags each command takes; `true` when the flag takes a value. */
@@ -329,6 +345,9 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   refresh: { origin: true, force: false, app: true },
   'mcp-headers': { origin: true, check: false, app: true },
   mcp: { origin: true, app: true, check: false },
+  channel: { origin: true, app: true },
+  claude: {},
+  'codex-answers': { origin: true, wait: true },
   herdr: {
     origin: true,
     app: true,
@@ -437,6 +456,8 @@ export function parseArgs(
   }
   if (leading.some(versions)) return { name: 'version' }
   if (!COMMANDS.has(first)) throw new UsageError(`There’s no “${first}” command.`)
+  // `pendingyou claude [args…]` (0.33.0): everything after it is Claude Code's, taken as it is.
+  if (first === 'claude') return { name: 'claude', args: [...after] }
   const rest = [...leading, ...after]
   const allowed = FLAGS[first] ?? {}
   const flags = new Map<string, string | true>()
@@ -632,6 +653,10 @@ export function parseArgs(
     case 'mcp':
       none()
       return { name: 'mcp', origin, ...app(), check: flags.has('check') }
+    // Not in USAGE: what Claude Code runs as the permission channel (0.33.0, channel.ts); `pendingyou claude` is.
+    case 'channel':
+      none()
+      return { name: 'channel', origin, ...app() }
     case 'herdr':
       return herdrCommand(origin, positional, flags, app)
     case 'machine':
@@ -652,6 +677,15 @@ export function parseArgs(
         ...apps(),
         ...permissionCards(),
       }
+    case 'codex-answers': {
+      none()
+      const given = text('wait')
+      if (given === undefined || !/^\d{1,2}$/.test(given) || Number(given) > ANSWER_WAIT_MAX)
+        throw new UsageError(
+          `codex-answers needs --wait and a whole number of minutes, 0 (off) to ${ANSWER_WAIT_MAX}, like: pendingyou codex-answers --wait 2`,
+        )
+      return { name: 'codex-answers', wait: Number(given) }
+    }
     case 'watch':
       none()
       if (!command?.length || !command[0])
@@ -903,6 +937,14 @@ export const USAGE = `pendingyou: Pending You for your coding agents (Claude Cod
   npx pendingyou status        What's set up for each agent, and whether it hears answers right away
   npx pendingyou login [--app <app>] | logout
                                Sign an agent in again (Claude Code's when none is named), or out
+  npx pendingyou claude [args…]
+                               Start Claude Code so its permission prompts can be answered on their
+                               Pending You cards: Allow or Deny there, or in the terminal; the first
+                               answer wins. Claude Code warns about the development channel each start
+  npx pendingyou codex-answers --wait <minutes>
+                               Codex asks on your phone first: its permission prompts go to your
+                               Pending You card, with Allow and Deny, and wait up to that many minutes
+                               (0 to ${ANSWER_WAIT_MAX}; 0, the default, is off) before Codex asks in its terminal
   npx pendingyou watch -- <command> [args…]
                                Run a command each time an answer is ready (always-on scripts)
   npx pendingyou uninstall     Remove exactly what init added

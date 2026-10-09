@@ -58,6 +58,22 @@
 // No card for a session that can't show a prompt: `claude -p` and the Agent SDK (CLAUDE_CODE_ENTRYPOINT `sdk-…`, as
 // Claude Code 2.1.289 sets it); nor without this computer's own connection for Claude Code (a sign-in that only hears
 // can't post).
+//
+// Since 0.33.0 a prompt can be answered on its card (docs/plans/2026-10-09-answer-permission-prompts.md, PA1–PA6). In a
+// session started with `pendingyou claude`, Claude Code relays each permission prompt to the channel (channel.ts), which
+// writes it here beside the hook's prompt for the same dialog (`relay`: its request id and its whole input, masked).
+// A relayed prompt gets a card of its own, never the session's one card: Allow and Deny, the input in a code block,
+// `permissionPrompt: { app: 'claude-code', relay: true }`, after the same GRACE_MS (PA5). The channel reads the card and
+// answers the dialog; answered in the terminal first, the hooks settle the prompt as before and its card is withdrawn
+// (`closing`). This file then holds the masked input of a relayed prompt (0600, gone with the prompt); nothing else.
+//
+// Since 0.34.0 Codex can ask on the person's phone first (§4, PA7), once they set a wait with `npx pendingyou
+// codex-answers --wait <minutes>` (codex-answers.ts). Codex runs its PermissionRequest hook before it shows anything,
+// so while the hook waits nothing else is asking: the hook posts the card at once (no grace), with Allow and Deny, the
+// whole input masked and `permissionPrompt: { app: 'codex', relay: true }`, reads it every 2 seconds for the wait, and
+// prints Codex's decision for a tap (allow, or deny with "Denied in Pending You."), then acknowledges the card. With no
+// tap in time it withdraws the card, saying the terminal is asking now, and prints nothing: Codex asks as usual. Its
+// stdout holds that decision and nothing else, ever. A card it can't post leaves the prompt to today's hooks.
 import { createHash, randomBytes } from 'node:crypto'
 import { open, readdir, rm, stat } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
@@ -65,11 +81,20 @@ import { threadNames } from './apps/codex-wake.ts'
 import { APP_NAMES, type AppId } from './apps/ids.ts'
 import { DEFAULT_ORIGIN } from './args.ts'
 import { type McpClient, McpFailure, mcpClient, SIGN_IN_ERROR, ToolRefused } from './bridge.ts'
+import { minutes, readAnswerWait } from './codex-answers.ts'
 import { sessionLink } from './confirm.ts'
 import { connectionMachine, readCredential } from './credentials.ts'
-import { configDir, PERMISSION_FOLDER, readJson, withLock, writeWhole } from './files.ts'
+import { claudeDir, configDir, PERMISSION_FOLDER, readJson, withLock, writeWhole } from './files.ts'
 import type { Io } from './io.ts'
-import { cut, redactCommand, redactText, redactUrl, shortPath } from './redact.ts'
+import {
+  BLANK,
+  cut,
+  maskSecrets,
+  redactCommand,
+  redactText,
+  redactUrl,
+  shortPath,
+} from './redact.ts'
 import { machineOf } from './remote.ts'
 
 type Json = Record<string, unknown>
@@ -121,7 +146,10 @@ export const isPermissionCard = (title: unknown) =>
   PROMPT_APPS.some(
     (app) =>
       title.startsWith(waitingFor(app)) ||
-      title.startsWith(`${APP_NAMES[app]} is waiting for your answer`),
+      title.startsWith(`${APP_NAMES[app]} is waiting for your answer`) ||
+      // A relayed prompt's card (0.33.0): "Allow Claude Code (billing-webhooks) to run a command?"
+      title.startsWith(`Allow ${APP_NAMES[app]} `) ||
+      title.startsWith(`Allow a subagent of ${APP_NAMES[app]}`),
   )
 
 /** The name a Claude Code card is asked under when the session never told Pending You its own. */
@@ -201,6 +229,30 @@ export interface Prompt {
   notice?: true
   /** Posting its card failed again and again: it's given up. */
   failed?: true
+  /** Claude Code relayed this dialog to the channel (0.33.0, channel.ts): its card can answer it. */
+  relay?: Relay
+  /** A relayed prompt's own card (0.33.0), once posted: never the session's one card. */
+  card?: Card
+}
+
+/**
+ * A permission prompt as Claude Code relayed it to the channel (0.33.0): the dialog's id, and what the card shows of it.
+ * Claude Code's `input_preview` comes with recognisable credentials masked; maskSecrets (redact.ts) masks it again.
+ */
+export interface Relay {
+  /** Claude Code's five-letter request id: the verdict carries it. */
+  id: string
+  /** When the channel heard it. */
+  at: number
+  /** Claude Code's description of the call, redacted and short; empty when it gave only its constant. */
+  description: string
+  /** The whole input, masked, as the card's code block shows it. */
+  lines: string[]
+  lang: 'shell' | 'json' | 'text'
+  /** Part of the input Claude Code couldn't serialize: the card offers no Allow (§7). */
+  unserializable?: true
+  /** No hook wrote this dialog down (0.33.0): the channel did, and the same tool's next call settles it. */
+  own?: true
 }
 
 /** The session's card, as posted: whose it is (the name it was asked under) and the prompt it shows. */
@@ -226,6 +278,8 @@ export interface SessionState {
   link?: string
   prompts: Prompt[]
   card?: Card
+  /** Relayed prompts' cards still to withdraw (0.33.0): their prompts were settled, and how. */
+  closing?: (Card & { how: 'answered' | 'ended' })[]
   /** How the last prompts were settled: answered in Claude Code, or the session ended (the cancel's words). */
   settled?: 'answered' | 'ended'
   /** The area its cards go in, once found. */
@@ -424,7 +478,11 @@ const alive = (state: SessionState, now: number) =>
  * still unanswered after QUIET_GRACE_MS (0.32.2).
  */
 const seen = (prompt: Prompt) =>
-  !prompt.quiet || prompt.shown !== undefined || prompt.waited !== undefined
+  !prompt.quiet ||
+  prompt.shown !== undefined ||
+  prompt.waited !== undefined ||
+  // A relayed prompt (0.33.0): Claude Code relays only a dialog it shows.
+  prompt.relay !== undefined
 
 /** A quiet prompt nothing has shown yet (0.32.2): the worker looks at its call once it has waited QUIET_GRACE_MS. */
 const unchecked = (prompt: Prompt) => !seen(prompt) && !prompt.notice
@@ -500,6 +558,44 @@ function reasonOf(app: PromptApp, input: unknown): string | null {
 const wentOn = (agent: string, now: number) => (prompt: Prompt) =>
   Boolean(prompt.quiet) && (prompt.agent ?? '') === agent && prompt.at <= now - BATCH_MS
 
+/** Relayed prompts' cards go to be withdrawn once their prompts are settled (0.33.0). */
+function closeCards(
+  state: SessionState,
+  settled: readonly Prompt[],
+  how: 'answered' | 'ended',
+): void {
+  const cards = settled.flatMap((prompt) => (prompt.card ? [{ ...prompt.card, how }] : []))
+  if (cards.length) state.closing = [...(state.closing ?? []), ...cards]
+}
+
+/** Keeps a session's newest MAX_PROMPTS prompts; a relayed one let go has its card withdrawn. */
+function keepNewest(state: SessionState): void {
+  closeCards(state, state.prompts.slice(0, -MAX_PROMPTS), 'answered')
+  state.prompts = state.prompts.slice(-MAX_PROMPTS)
+}
+
+/** How long after the channel wrote a dialog down itself a hook's late prompt for the same tool is that dialog. */
+const ADOPT_MS = 30_000
+
+/**
+ * A hook's prompt for a dialog the channel already wrote down itself (0.33.0: the hook came more than RELAY_MATCH_MS
+ * late): the channel's prompt takes the hook's key and words, so the call's PostToolUse settles it, and there's still
+ * one card. True when it did.
+ */
+function adopt(state: SessionState, prompt: Prompt): boolean {
+  const own = state.prompts.find(
+    (each) =>
+      each.relay?.own &&
+      each.tool === prompt.tool &&
+      Math.abs(prompt.at - each.relay.at) <= ADOPT_MS,
+  )
+  if (!own?.relay) return false
+  const { at: _at, quiet: _quiet, ...hook } = prompt
+  Object.assign(own, hook)
+  delete own.relay.own
+  return true
+}
+
 /** PermissionRequest: writes the prompt down and makes sure the session's worker is going (once it can post). */
 async function asked(io: Io, origin: string, input: Json, app: PromptApp): Promise<void> {
   if (io.platform === 'win32') return
@@ -557,10 +653,16 @@ async function asked(io: Io, origin: string, input: Json, app: PromptApp): Promi
       app === 'claude-code'
         ? next.prompts.filter((each) => !wentOn(agent, now)(each))
         : next.prompts
+    closeCards(
+      next,
+      next.prompts.filter((each) => !kept.includes(each)),
+      'answered',
+    )
     next.prompts = kept
     // The same call asked again (the hook run twice) is still the one prompt.
-    if (!next.prompts.some((each) => each.key === prompt.key)) next.prompts.push(prompt)
-    next.prompts = next.prompts.slice(-MAX_PROMPTS)
+    const adopted = app === 'claude-code' ? adopt(next, prompt) : false
+    if (!adopted && !next.prompts.some((each) => each.key === prompt.key)) next.prompts.push(prompt)
+    keepNewest(next)
     delete next.settled
     next.at = now
     // Every prompt has the worker (0.32.2): a quiet one's card goes up once a Notification shows it, or once it has
@@ -591,11 +693,18 @@ async function settle(
     origin = state.origin
     const left = state.prompts.filter((prompt) => !which(prompt))
     if (left.length === state.prompts.length) return state
+    // A relayed prompt's own card goes with it (0.33.0).
+    closeCards(
+      state,
+      state.prompts.filter((prompt) => !left.includes(prompt)),
+      how,
+    )
     state.prompts = left
     state.settled = how
     state.at = now
     // No card, and nothing left: no worker.
-    if (!state.card && left.length === 0) return alive(state, now) ? state : null
+    if (!state.card && !state.closing?.length && left.length === 0)
+      return alive(state, now) ? state : null
     worker = claim(state, now)
     return state
   })
@@ -626,7 +735,12 @@ async function ran(io: Io, input: Json, app: PromptApp): Promise<void> {
     io,
     where.session,
     (prompt) =>
-      prompt.key === key || (app === 'codex' ? !exact && prompt.tool === tool : movedOn(prompt)),
+      prompt.key === key ||
+      (app === 'codex'
+        ? !exact && prompt.tool === tool
+        : movedOn(prompt) ||
+          // A dialog only the channel wrote down (0.33.0): the session's next call of its tool is it, or after it.
+          (!exact && Boolean(prompt.relay?.own) && prompt.tool === tool && !agent)),
     'answered',
   )
 }
@@ -743,8 +857,9 @@ async function notified(io: Io, origin: string, input: Json): Promise<void> {
 
 /**
  * `pendingyou permission`, `permission-done` and `notify` (0.16.0): Claude Code's PermissionRequest, PostToolUse,
- * PostToolUseFailure, SessionEnd and Notification hooks (Codex's first three). Prints nothing, ever (a PermissionRequest
- * hook's output could decide the prompt), and exits 0.
+ * PostToolUseFailure, SessionEnd and Notification hooks (Codex's first three). Prints nothing (a PermissionRequest
+ * hook's output decides the prompt), but for Codex's decision once the person tapped Allow or Deny on its card, with a
+ * wait set (0.34.0, askFirst), and exits 0.
  */
 export async function permissionHook(
   io: Io,
@@ -756,6 +871,11 @@ export async function permissionHook(
     if (!isObject(input)) return 0
     switch (input.hook_event_name) {
       case 'PermissionRequest':
+        // Codex with a wait set (0.34.0): the card first, and the decision from it; else as before.
+        if (app === 'codex') {
+          const wait = await readAnswerWait(io)
+          if (wait > 0 && (await askFirst(io, options.origin, input, wait))) break
+        }
         await asked(io, options.origin, input, app)
         break
       case 'PostToolUse':
@@ -784,6 +904,10 @@ type Plan =
   | { kind: 'post'; prompt: Prompt }
   | { kind: 'update'; prompt: Prompt }
   | { kind: 'cancel' }
+  /** A relayed prompt's own card (0.33.0): Allow and Deny. */
+  | { kind: 'relay'; prompt: Prompt }
+  /** A relayed prompt's card whose prompt was settled (0.33.0). */
+  | { kind: 'close'; card: Card & { how: 'answered' | 'ended' } }
 
 /**
  * When a prompt's card is due: once it has waited `grace`, or as soon as a Notification showed its dialog (0.16.0); a
@@ -811,7 +935,7 @@ export function planFor(
   grace: number,
   quietGrace: number = QUIET_GRACE_MS,
 ): Plan {
-  const plan = cardPlan(state, now, grace)
+  const plan = relayPlan(state, now, grace, cardPlan(state, now, grace))
   const pending = state.prompts.filter(unchecked)
   if (pending.length === 0) return plan
   const check = Math.min(...pending.map((prompt) => prompt.at + quietGrace)) - now
@@ -821,9 +945,34 @@ export function planFor(
   return plan
 }
 
-/** The next step for the session's card, from the prompts that can have one. */
+/**
+ * Relayed prompts' own cards come first (0.33.0): a card whose prompt was settled is withdrawn; a relayed prompt's card
+ * goes up once it has waited `grace`, as any prompt's does (PA5), or a Notification showed it. Otherwise `then`, the
+ * session card's step, or whichever wait is shorter.
+ */
+function relayPlan(state: SessionState, now: number, grace: number, then: Plan): Plan {
+  const closing = state.closing?.[0]
+  if (closing) return { kind: 'close', card: closing }
+  const waiting = state.prompts.filter((prompt) => prompt.relay && !prompt.card && !prompt.failed)
+  if (waiting.length === 0) return then
+  const dueAt = (prompt: Prompt) =>
+    Math.min(
+      Math.min(prompt.at, (prompt.relay as Relay).at) + grace,
+      prompt.shown ?? Number.POSITIVE_INFINITY,
+    )
+  const first = waiting.reduce((soonest, prompt) =>
+    dueAt(prompt) < dueAt(soonest) ? prompt : soonest,
+  )
+  const due = dueAt(first) - now
+  if (due <= 0) return { kind: 'relay', prompt: first }
+  if (then.kind === 'done') return { kind: 'wait', ms: due }
+  if (then.kind === 'wait') return { kind: 'wait', ms: Math.min(then.ms, due) }
+  return then
+}
+
+/** The next step for the session's card, from the prompts that can have one: never a relayed one (0.33.0). */
 function cardPlan(state: SessionState, now: number, grace: number): Plan {
-  const prompts = state.prompts.filter(seen)
+  const prompts = state.prompts.filter((prompt) => seen(prompt) && !prompt.relay)
   if (prompts.length === 0) return state.card ? { kind: 'cancel' } : { kind: 'done' }
   if (state.card) {
     const newest = shownOf(prompts)
@@ -844,7 +993,7 @@ function graceOf(env: Record<string, string | undefined>): number {
 }
 
 /** The computer as Pending You names it ("Claude Code on Sam’s MacBook Pro"). */
-async function computerOf(io: Io, origin: string, app: PromptApp): Promise<string> {
+export async function computerOf(io: Io, origin: string, app: PromptApp): Promise<string> {
   const named = await connectionMachine(io, origin, app).catch(() => null)
   return cut(named ?? (machineOf(io.host) || 'this computer'), 60)
 }
@@ -1287,6 +1436,8 @@ async function post(
     blocking: false,
     urgency: 'now',
     askedFirst: { where: 'terminal', askedAt: new Date(prompt.at).toISOString() },
+    // A permission prompt's card without buttons (0.33.0): it's answered only in the app that asked.
+    permissionPrompt: { app: appOf(state), relay: false },
   })
   const requestId = idOf(result, 'requestId', 'req_')
   const version = typeof result.version === 'number' ? result.version : 1
@@ -1297,6 +1448,102 @@ async function post(
     state.areaId = areaId
   })
   if (!kept) await withdraw(io, client, card, state, 'answered').catch(() => {})
+}
+
+/** The options of a relayed prompt's card: Allow and Deny; only Deny when part of its input couldn't be shown (§7). */
+export const ALLOW = 'allow'
+export const DENY = 'deny'
+export const IN_TERMINAL = 'terminal'
+
+/** What a relayed prompt's card asks (0.33.0): "Allow Claude Code (billing-webhooks) to run a command?" */
+export function relayTitle(state: SessionState, prompt: Prompt, name: string): string {
+  const app = appOf(state)
+  const who = name === defaultName(app) ? APP_NAMES[app] : `${APP_NAMES[app]} (${name})`
+  const subject = byAgent(state, prompt) ? `a subagent of ${who}` : who
+  const doing = prompt.doing.startsWith('to ')
+    ? prompt.doing
+    : `to use ${toolName(prompt.tool ?? '')}`
+  return cut(`Allow ${subject} ${doing}?`, TITLE_MAX)
+}
+
+/**
+ * Posts a relayed prompt's own card (0.33.0): Allow and Deny, the whole input in a code block (PA2), asked in both
+ * places, marked as a relayed permission prompt. A card it can't record (the prompt was settled meanwhile) is withdrawn.
+ */
+async function postRelay(
+  io: Io,
+  client: McpClient,
+  state: SessionState,
+  prompt: Prompt,
+  worker: string,
+) {
+  const relay = prompt.relay as Relay
+  const app = appOf(state)
+  const name = await nameOf(io, state)
+  await client.call('whoami', { name })
+  const areaId = state.areaId ?? (await areaFor(io, client, state, name))
+  const machine = await computerOf(io, state.origin, app)
+  const title = relayTitle(state, prompt, name)
+  const who = name === defaultName(app) ? APP_NAMES[app] : `${APP_NAMES[app]} (${name})`
+  const where = `in ${tilde(io, state.cwd)} on ${machine}`
+  const asker = byAgent(state, prompt)
+    ? `A subagent${prompt.agentType ? ` (${prompt.agentType})` : ''} of ${who}, ${where},`
+    : `${who} ${where}`
+  const wants = prompt.doing.startsWith('to ')
+    ? `wants your OK ${prompt.doing}`
+    : `wants your OK to use ${toolName(prompt.tool ?? '')}`
+  const why = relay.description ? ` It says: “${relay.description}”.` : ''
+  const answer = relay.unserializable
+    ? `Part of it couldn’t be shown, so only Deny is here; to allow it, answer in ${APP_NAMES[app]} on ${machine}.`
+    : `Allow or Deny here, or answer in ${APP_NAMES[app]} on ${machine}: the first answer wins.`
+  const session = createHash('sha256').update(state.session).digest('hex').slice(0, 24)
+  const result = await client.call('post_request', {
+    idempotencyKey: `${app}-relay:${session}:${relay.id}:${relay.at}`,
+    areaId,
+    session: { label: name, machine, cwd: cut(tilde(io, state.cwd), 300) },
+    kind: 'choice',
+    intent: 'approve',
+    title,
+    summary: cut(`${asker} ${wants}.${why} ${answer}`, 400),
+    options: relay.unserializable
+      ? [
+          { id: DENY, label: 'Deny' },
+          { id: IN_TERMINAL, label: `I’ll answer in ${APP_NAMES[app]}` },
+        ]
+      : [
+          { id: ALLOW, label: 'Allow', detail: 'This call only. Nothing is allowed after it.' },
+          { id: DENY, label: 'Deny' },
+        ],
+    artifacts: [
+      {
+        kind: 'code',
+        title: prompt.tool === 'Bash' ? 'The command' : `${toolName(prompt.tool ?? '')}’s input`,
+        ref: `permission-${relay.id}`,
+        lang: relay.lang,
+        lines: relay.lines,
+      },
+    ],
+    context: { ...contextOf(state, prompt), trace: [{ state: 'paused' as const, text: title }] },
+    blocking: false,
+    urgency: 'now',
+    askedFirst: { where: 'terminal', askedAt: new Date(prompt.at).toISOString() },
+    // A relayed permission prompt's card: Pending You takes it only from the app's own connection.
+    permissionPrompt: { app, relay: true },
+  })
+  const requestId = idOf(result, 'requestId', 'req_')
+  const version = typeof result.version === 'number' ? result.version : 1
+  if (!requestId) throw new McpFailure(-32000, 'Pending You posted no card.')
+  const card: Card = { requestId, version, key: prompt.key, name }
+  const id = promptId(prompt)
+  let kept = false
+  const ours = await record(io, state.session, worker, (state) => {
+    const now = state.prompts.find((each) => promptId(each) === id && each.relay?.id === relay.id)
+    if (!now) return
+    now.card = card
+    state.areaId = areaId
+    kept = true
+  })
+  if (!ours || !kept) await withdraw(io, client, card, state, 'answered').catch(() => {})
 }
 
 /** Whether the card is still in front of the person (get_request), with its version; null when it's closed. */
@@ -1428,7 +1675,7 @@ async function letGo(io: Io, session: string, worker: string, grace: number): Pr
       return state
     }
     delete state.worker
-    return state.prompts.length === 0 && !state.card ? null : state
+    return state.prompts.length === 0 && !state.card && !state.closing?.length ? null : state
   })
   return done
 }
@@ -1486,7 +1733,15 @@ export async function permissionWorker(
         client ??= await mcpClient(io, state.origin, appOf(state), CALL_MS)
         if (plan.kind === 'post') await post(io, client, state, plan.prompt, worker)
         else if (plan.kind === 'update') await update(io, client, state, plan.prompt, worker)
-        else {
+        else if (plan.kind === 'relay') await postRelay(io, client, state, plan.prompt, worker)
+        else if (plan.kind === 'close') {
+          const card = plan.card
+          await withdraw(io, client, card, state, card.how)
+          await record(io, session, worker, (state) => {
+            state.closing = state.closing?.filter((each) => each.requestId !== card.requestId)
+            if (!state.closing?.length) delete state.closing
+          })
+        } else {
           const card = state.card as Card
           await withdraw(io, client, card, state, state.settled ?? 'answered')
           await record(io, session, worker, (state) => {
@@ -1504,8 +1759,20 @@ export async function permissionWorker(
         if (failures >= BACKOFF_MS.length) {
           failures = 0
           await record(io, session, worker, (state) => {
-            if (plan.kind === 'post')
-              state.prompts = state.prompts.map((prompt) => ({ ...prompt, failed: true }))
+            if (plan.kind === 'relay') {
+              const id = promptId(plan.prompt)
+              state.prompts = state.prompts.map((prompt) =>
+                promptId(prompt) === id ? { ...prompt, failed: true } : prompt,
+              )
+            } else if (plan.kind === 'close') {
+              state.closing = state.closing?.filter(
+                (each) => each.requestId !== plan.card.requestId,
+              )
+              if (!state.closing?.length) delete state.closing
+            } else if (plan.kind === 'post')
+              state.prompts = state.prompts.map((prompt) =>
+                prompt.relay ? prompt : { ...prompt, failed: true },
+              )
             else if (plan.kind === 'update' && state.card)
               state.card = { ...state.card, key: plan.prompt.key }
             else delete state.card
@@ -1521,6 +1788,163 @@ export async function permissionWorker(
   }
 }
 
+/**
+ * How far apart a relayed dialog and a hook's prompt may be to be the same one (0.33.0): Claude Code runs the
+ * PermissionRequest hook and relays the dialog as it opens it, within milliseconds of each other.
+ */
+export const RELAY_MATCH_MS = 5000
+
+/** What the channel heard (0.33.0): the dialog, the tool, and the card's words for it should no hook write it down. */
+export interface Relayed {
+  relay: Relay
+  tool: string
+  /** promptWords for the relayed input, for a prompt the channel writes down itself. */
+  words: { title: string; what: string; doing: string }
+}
+
+/**
+ * How well a hook's prompt fits a relayed dialog: null when it can't be it (another tool, too far apart in time,
+ * relayed already, a Notification's); else how many of the prompt's own words (its `what`, redacted, in the pieces
+ * between what redact.ts took out) are in the relayed input. Of two dialogs for the same tool at once, the one whose
+ * command it is wins.
+ */
+function fit(prompt: Prompt, heard: Relayed): number | null {
+  if (prompt.relay || prompt.notice || prompt.tool !== heard.tool) return null
+  if (Math.abs(prompt.at - heard.relay.at) > RELAY_MATCH_MS) return null
+  const input = heard.relay.lines.join(' ').replace(/\s+/g, ' ')
+  return prompt.what
+    .split(BLANK)
+    .map((part) => part.replace(/\s+/g, ' ').trim())
+    .filter((part) => part.length >= 3 && input.includes(part)).length
+}
+
+/** The prompt among a session's that a relayed dialog is: the best fit, the nearest in time of equals. */
+function bestFit(prompts: readonly Prompt[], heard: Relayed): Prompt | null {
+  let best: { prompt: Prompt; score: number } | null = null
+  for (const prompt of prompts) {
+    const score = fit(prompt, heard)
+    if (score === null) continue
+    const apart = Math.abs(prompt.at - heard.relay.at)
+    if (
+      !best ||
+      score > best.score ||
+      (score === best.score && apart < Math.abs(best.prompt.at - heard.relay.at))
+    )
+      best = { prompt, score }
+  }
+  return best?.prompt ?? null
+}
+
+/** Sessions with a file here, the given one first: where a relayed dialog's prompt may be. */
+async function sessionsFrom(io: Pick<Io, 'env' | 'home'>, first: string | null): Promise<string[]> {
+  const names = await readdir(folderOf(io)).catch(() => [] as string[])
+  const others = names
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => name.slice(0, -'.json'.length))
+    .filter((session) => SESSION.test(session) && session !== first)
+  return first ? [first, ...others] : others
+}
+
+/** A Claude Code session's transcript where Claude Code keeps it: `<claude>/projects/<folder, dashed>/<session>.jsonl`. */
+const transcriptOf = (io: Pick<Io, 'env' | 'home'>, cwd: string, session: string) =>
+  join(claudeDir(io), 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'), `${session}.jsonl`)
+
+/**
+ * The channel heard a dialog (0.33.0, channel.ts): it's written down on the hook's prompt for it, so that prompt's card
+ * is this one, with Allow and Deny. `session` is the channel's own Claude Code session (CLAUDE_CODE_SESSION_ID); the
+ * prompt is looked for there first, then in every session's file (a session id that changed under the channel, after
+ * /clear). With none found and `last` (it has waited RELAY_MATCH_MS for the hook), the channel writes the dialog down
+ * itself, in its session's file. Starts the session's worker unless one is running. Returns the session it's written
+ * down in, or null when it isn't (yet).
+ */
+export async function recordRelay(
+  io: Io,
+  origin: string,
+  heard: Relayed,
+  options: { session: string | null; cwd: string; last: boolean },
+): Promise<string | null> {
+  if (io.platform === 'win32') return null
+  if ((await readCredential(io, origin, CLAUDE))?.kind !== 'connection') return null
+  for (const session of await sessionsFrom(io, options.session)) {
+    const before = await load(io, session)
+    if (!before || !bestFit(before.prompts, heard)) continue
+    let worker: string | null = null
+    let matched = false
+    const state = await change(io, session, (state) => {
+      const prompt = state ? bestFit(state.prompts, heard) : null
+      if (!state || !prompt) return state
+      prompt.relay = heard.relay
+      delete prompt.failed
+      matched = true
+      delete state.settled
+      worker = claim(state, io.now())
+      return state
+    })
+    if (!matched || !state) continue
+    if (worker) startWorker(io, state.origin, session, worker)
+    return session
+  }
+  if (!options.last) return null
+  const session = options.session ?? `channel-${io.ppid ?? process.pid}`
+  const now = io.now()
+  const prompt: Prompt = {
+    key: promptKey(heard.tool, { relay: heard.relay.id }),
+    tool: heard.tool.slice(0, 100),
+    ...heard.words,
+    at: heard.relay.at,
+    relay: { ...heard.relay, own: true },
+  }
+  let worker: string | null = null
+  await change(io, session, (state) => {
+    const next: SessionState = state ?? {
+      version: 1,
+      origin,
+      session,
+      cwd: options.cwd,
+      ...(options.session ? { transcript: transcriptOf(io, options.cwd, options.session) } : {}),
+      prompts: [],
+      at: now,
+    }
+    if (next.prompts.some((each) => each.relay?.id === heard.relay.id)) return next
+    next.prompts.push(prompt)
+    keepNewest(next)
+    delete next.settled
+    next.at = now
+    worker = claim(next, now)
+    return next
+  })
+  if (worker) startWorker(io, origin, session, worker)
+  return session
+}
+
+/** A relayed dialog's prompt as its session's file has it now (0.33.0); null once it's settled (or the file's gone). */
+export async function relayedPrompt(
+  io: Pick<Io, 'env' | 'home'>,
+  session: string,
+  id: string,
+): Promise<{ state: SessionState; prompt: Prompt } | null> {
+  const state = await load(io, session)
+  const prompt = state?.prompts.find((each) => each.relay?.id === id)
+  return state && prompt ? { state, prompt } : null
+}
+
+/**
+ * The person answered a relayed dialog on its card and the channel passed it on (0.33.0): its prompt is settled, and
+ * its card answered there, so there's nothing to withdraw. A file with nothing left in it goes (unless a worker has it).
+ */
+export async function answeredOnCard(io: Io, session: string, id: string): Promise<void> {
+  await change(io, session, (state) => {
+    if (!state) return null
+    const left = state.prompts.filter((prompt) => prompt.relay?.id !== id)
+    if (left.length === state.prompts.length) return state
+    state.prompts = left
+    state.at = io.now()
+    if (left.length === 0 && !state.card && !state.closing?.length && !alive(state, io.now()))
+      return null
+    return state
+  })
+}
+
 /** What uninstall says it took away, when there was anything. */
 export async function removePermissionFiles(io: Pick<Io, 'env' | 'home'>): Promise<boolean> {
   const folder = folderOf(io)
@@ -1530,4 +1954,236 @@ export async function removePermissionFiles(io: Pick<Io, 'env' | 'home'>): Promi
   )
   await rm(folder, { recursive: true, force: true })
   return there
+}
+
+/** How often Codex's hook reads its card while it waits (0.34.0): as the channel reads Claude Code's. */
+export const ANSWER_READ_MS = 2000
+/** How long one call to Pending You may take while Codex waits: short, so a withdrawal fits in the hook's margin. */
+const ANSWER_CALL_MS = 8000
+/** The most of an input a card shows (as the channel's): past it, only Deny is offered there. */
+const ANSWER_INPUT_MAX = 40_000
+const ANSWER_LINES_MAX = 400
+/** The longest line a card shows (masking a longer one takes too long for a hook): past it, the input is cut there. */
+const ANSWER_LINE_MAX = 2000
+/** What Codex is told when the person taps Deny on the card. */
+export const DENIED = 'Denied in Pending You.'
+
+/** Codex's decision for a tap (0.34.0), as its PermissionRequest hook prints it: the hook's stdout and nothing else. */
+export function codexDecision(verdict: 'allow' | 'deny'): string {
+  const decision =
+    verdict === 'allow' ? { behavior: 'allow' } : { behavior: 'deny', message: DENIED }
+  return JSON.stringify({
+    hookSpecificOutput: { hookEventName: 'PermissionRequest', decision },
+  })
+}
+
+/**
+ * A Codex prompt's input as its card shows it (0.34.0): the command for a shell call, the patch for apply_patch, else
+ * each field on its own line; secrets masked (redact.ts's maskSecrets), Codex's reason left for the summary. `cut` when
+ * it was too long to show whole: the card then offers no Allow.
+ */
+export function codexInputLines(
+  tool: string,
+  input: Json,
+): { lines: string[]; lang: Relay['lang']; cut: boolean } {
+  const { description: _, ...rest } = input
+  const command = commandText(rest.command)
+  const patch = command || text(rest.patch) || text(rest.input)
+  let lines: string[]
+  let lang: Relay['lang'] = 'text'
+  if (tool === 'apply_patch' && patch) lines = patch.split('\n')
+  else if (command) {
+    lines = command.split('\n')
+    lang = 'shell'
+  } else
+    lines = Object.entries(rest).flatMap(([key, value]) =>
+      `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`.split('\n'),
+    )
+  // Cut before masking, and only between whole lines: a line too long is left out whole, never half a secret shown.
+  const kept: string[] = []
+  let size = 0
+  for (const line of lines) {
+    if (
+      kept.length >= ANSWER_LINES_MAX ||
+      line.length > ANSWER_LINE_MAX ||
+      size + line.length > ANSWER_INPUT_MAX
+    ) {
+      kept.push('… (cut here: too long to show whole)')
+      return { lines: kept, lang, cut: true }
+    }
+    kept.push(maskSecrets(line))
+    size += line.length
+  }
+  return { lines: kept.length ? kept : [''], lang, cut: false }
+}
+
+/** What a Codex card's answer says (0.34.0): Allow or Deny tapped, the terminal chosen, or not answered. */
+function tapOf(card: Json, partial: boolean): 'allow' | 'deny' | 'terminal' | null {
+  if (!['answered', 'resolved'].includes(text(card.status))) return null
+  const answer = isObject(card.answer) ? card.answer : null
+  const picked = Array.isArray(answer?.choiceIds) ? answer.choiceIds : []
+  if (picked.length !== 1) return 'terminal'
+  if (picked[0] === DENY) return 'deny'
+  if (picked[0] === ALLOW && !partial) return 'allow'
+  return 'terminal'
+}
+
+/**
+ * Codex's PermissionRequest with a wait set (0.34.0, PA7): posts the prompt's card at once, waits up to `wait` minutes
+ * for Allow or Deny on it (reading it every ANSWER_READ_MS), prints Codex's decision and acknowledges the card; with no
+ * tap in time, withdraws the card and prints nothing, so Codex asks in its terminal. True once the card was posted (the
+ * prompt is this one's); false when it couldn't be, and today's hooks take the prompt.
+ */
+async function askFirst(io: Io, origin: string, input: Json, wait: number): Promise<boolean> {
+  if (io.platform === 'win32') return false
+  const where = whereOf(input)
+  const tool = text(input.tool_name)
+  if (!where || !tool) return false
+  if ((await readCredential(io, origin, 'codex'))?.kind !== 'connection') return false
+  const started = io.now()
+  const toolInput = isObject(input.tool_input) ? input.tool_input : {}
+  const cwd = text(input.cwd) || io.cwd
+  const known = await load(io, where.session).catch(() => null)
+  const state: SessionState = {
+    version: 1,
+    origin,
+    app: 'codex',
+    session: where.session,
+    cwd,
+    prompts: [],
+    ...(known?.areaId && known.cwd === cwd ? { areaId: known.areaId } : {}),
+    at: started,
+  }
+  const prompt: Prompt = {
+    key: promptKey(tool, keyInput('codex', toolInput)),
+    tool: tool.slice(0, 100),
+    ...promptWords(tool, toolInput, io.home, 'codex'),
+    at: started,
+  }
+  const shown = codexInputLines(tool, toolInput)
+  let client: McpClient | null = null
+  let card: Card
+  let machine: string
+  try {
+    client = await mcpClient(io, origin, 'codex', ANSWER_CALL_MS)
+    const name = await nameOf(io, state)
+    await client.call('whoami', { name })
+    const areaId = state.areaId ?? (await areaFor(io, client, state, name))
+    machine = await computerOf(io, origin, 'codex')
+    const title = relayTitle(state, prompt, name)
+    const who = name === defaultName('codex') ? APP_NAMES.codex : `${APP_NAMES.codex} (${name})`
+    const wants = prompt.doing.startsWith('to ')
+      ? `wants your OK ${prompt.doing}`
+      : `wants your OK to use ${toolName(tool)}`
+    const reason = reasonOf('codex', toolInput)
+    const why = reason ? ` It says: “${reason}”.` : ''
+    const answer = shown.cut
+      ? ' It’s too long to show whole, so only Deny is here; to allow it, choose “I’ll answer in Codex” and answer in its terminal.'
+      : ` Allow or Deny here: Codex waits up to ${minutes(wait)} for you, showing nothing, then asks in its terminal.`
+    const session = createHash('sha256').update(where.session).digest('hex').slice(0, 24)
+    const result = await client.call('post_request', {
+      idempotencyKey: `codex-ask:${session}:${prompt.key}:${started}`,
+      areaId,
+      session: { label: name, machine, cwd: cut(tilde(io, cwd), 300) },
+      kind: 'choice',
+      intent: 'approve',
+      title,
+      summary: cut(`${who} in ${tilde(io, cwd)} on ${machine} ${wants}.${why}${answer}`, 400),
+      options: shown.cut
+        ? [
+            { id: DENY, label: 'Deny' },
+            { id: IN_TERMINAL, label: `I’ll answer in ${APP_NAMES.codex}` },
+          ]
+        : [
+            { id: ALLOW, label: 'Allow', detail: 'This call only. Nothing is allowed after it.' },
+            { id: DENY, label: 'Deny' },
+          ],
+      artifacts: [
+        {
+          kind: 'code',
+          title: shown.lang === 'shell' ? 'The command' : `${toolName(tool)}’s input`,
+          ref: `permission-${prompt.key.slice(0, 16)}`,
+          lang: shown.lang,
+          lines: shown.lines,
+        },
+      ],
+      context: { ...contextOf(state, prompt), trace: [{ state: 'paused' as const, text: title }] },
+      blocking: false,
+      urgency: 'now',
+      // Answered on the card only: Codex shows nothing while its hook waits.
+      permissionPrompt: { app: 'codex', relay: true },
+    })
+    const requestId = idOf(result, 'requestId', 'req_')
+    if (!requestId) throw new McpFailure(-32000, 'Pending You posted no card.')
+    card = {
+      requestId,
+      version: typeof result.version === 'number' ? result.version : 1,
+      key: prompt.key,
+      name,
+    }
+  } catch {
+    await client?.close().catch(() => {})
+    return false
+  }
+  const pending = client
+  const read = () => pending.call('get_request', { requestId: card.requestId, name: card.name })
+  const say = async (tap: 'allow' | 'deny' | 'terminal', now: Json) => {
+    if (tap !== 'terminal') io.out(`${codexDecision(tap)}\n`)
+    if (now.status !== 'answered' || typeof now.version !== 'number') return
+    await pending
+      .call('ack_answer', {
+        requestId: card.requestId,
+        name: card.name,
+        expectedVersion: now.version,
+        outcome: cut(
+          tap === 'allow'
+            ? `Allowed in Codex on ${machine}.`
+            : tap === 'deny'
+              ? `Denied in Codex on ${machine}.`
+              : `Not allowed or denied here: Codex asks in its terminal on ${machine} now.`,
+          200,
+        ),
+      })
+      .catch(() => {})
+  }
+  const until = started + wait * 60_000
+  try {
+    while (!io.signal.aborted && io.now() < until) {
+      await io.sleep(Math.min(ANSWER_READ_MS, until - io.now()), io.signal)
+      if (io.signal.aborted) return true
+      let now: Json
+      try {
+        now = await read()
+      } catch (error) {
+        if (error instanceof McpFailure && error.code === SIGN_IN_ERROR) break
+        continue
+      }
+      if (['pending', 'snoozed', 'delegated'].includes(text(now.status))) continue
+      // Closed some other way (withdrawn, expired): nothing to say, and Codex asks in its terminal.
+      const tap = tapOf(now, shown.cut)
+      if (tap) await say(tap, now)
+      return true
+    }
+    if (io.signal.aborted) return true
+    // No tap in time: the card goes, and Codex asks in its terminal.
+    try {
+      await pending.call('cancel_request', {
+        requestId: card.requestId,
+        name: card.name,
+        reason: cut(
+          `No answer here in ${minutes(wait)}, so Codex is asking in its terminal on ${machine} now.`,
+          200,
+        ),
+      })
+    } catch (error) {
+      if (!(error instanceof ToolRefused)) return true
+      // Tapped just as the wait ran out: that answer still counts.
+      const now = await read().catch(() => null)
+      const tap = now ? tapOf(now, shown.cut) : null
+      if (now && tap) await say(tap, now)
+    }
+    return true
+  } finally {
+    await pending.close().catch(() => {})
+  }
 }

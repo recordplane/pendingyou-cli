@@ -274,6 +274,40 @@ PermissionRequest hook prints nothing, so Codex asks exactly as before; the card
 Codex, the turn ends or the thread closes. It needs Codex signing in through this computer's sign-in, and trusting the
 new hooks once. The Codex app's browser-use prompts don't run that hook, so they get no card.
 
+### Allow or Deny on the card (0.33.0)
+
+Start Claude Code with `npx pendingyou claude` (any of `claude`'s own arguments after it) and a prompt left waiting gets
+a card with **Allow** and **Deny**, and the whole command or input it asks about, secrets masked: “Allow Claude Code
+(billing-webhooks) to run a command?”. Tap one and the terminal's dialog closes and the call runs, or is refused. The
+dialog stays open meanwhile, so you can still answer at the terminal: the first answer wins, and the card goes. Allow
+is for that one call only; nothing is allowed after it.
+
+It works through Claude Code's channels (a research preview): `init` registers a small local MCP server,
+`pendingyou-permissions`, that Claude Code relays its permission prompts to in a session started this way, and that
+sends Claude nothing. Until it's on Claude Code's allowlist, Claude Code shows a warning about development channels at
+each start (`pendingyou claude` runs `claude --dangerously-load-development-channels server:pendingyou-permissions`).
+It needs Claude Code 2.1.234 or later and the permission cards on; a session started with plain `claude` gets the card
+without buttons, as above.
+
+### Codex: ask on my phone first (0.34.0)
+
+Codex shows nothing while its PermissionRequest hook runs, so its prompt can't be on the card and in the terminal at
+once. Instead you can have it ask on your phone first:
+
+```sh
+npx pendingyou codex-answers --wait 2
+```
+
+Now when Codex needs your OK, a card goes up at once with **Allow** and **Deny** and the whole command or patch, secrets
+masked: “Allow Codex (infra) to run a command?”. Tap one and Codex goes on (or is refused, told “Denied in Pending
+You.”). With no answer within the wait, the card goes and Codex asks in its terminal as usual. The wait is 0 to 10
+minutes, per computer; 0, the default, turns it off (the card without buttons, as above). `init` names it when it sets
+Codex up, `status` shows it, and `uninstall` clears it.
+
+It gives Codex's PermissionRequest hook the wait plus 30 seconds (630 seconds for 10 minutes; Codex sets no upper limit
+for that hook). Codex trusts a hook by its whole definition, timeout included, so after changing the wait trust the hook
+again: open Codex, type `/hooks`, and trust it. Allow is for that one call only; nothing is allowed after it.
+
 ## Which sessions are open
 
 Since 0.15.0 Pending You hears which of your agents' sessions are open right now, so it can say so and offer an open
@@ -501,6 +535,8 @@ its environment. A failing command is tried twice more, then skipped. `--once` s
 | `hold <requestId>` | Wait for the answer, print it, exit (`--timeout 4h`); the wake mod answers it itself |
 | `status` | What's set up for each agent; exits 0 when each hears answers right away (`--app`) |
 | `login` / `logout` | Sign an agent in again, or out (`--app`, `--device`, `--browser`, `--force`, `--name`, `--all`) |
+| `claude [args…]` | Claude Code with the permission channel: a prompt's card has Allow and Deny; `claude`'s own arguments after it |
+| `codex-answers --wait <minutes>` | Codex's permission prompts go to your card first, with Allow and Deny, for up to that many minutes (0 to 10; 0, the default, is off) before Codex asks in its terminal |
 | `watch -- <command>` | Run a command each time an answer is ready (`--once`) |
 | `pickup` / `handoff` | The session-start and next-message hooks (`--app`) |
 | `stopcheck` | The Stop hook: items for you left only in chat (`--app`) |

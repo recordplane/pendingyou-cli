@@ -1,11 +1,15 @@
 // The command line: parse the arguments, run the command, return the exit code. `cli.ts` runs it for real; tests run
 // it with their own Io.
 import { HOOK_DEADLINE_MS, refreshInBackground, SignInNeeded, Unavailable } from './api.ts'
+import { setAnswerWait } from './apps/codex.ts'
 import { listen, listenHanded, posted } from './apps/codex-wake.ts'
 import { DEFAULT_APP } from './apps/ids.ts'
 import { appModule } from './apps/registry.ts'
 import { type Command, commandOf, HOOK_COMMANDS, parseArgs, USAGE, UsageError } from './args.ts'
 import { bridge } from './bridge.ts'
+import { channel } from './channel.ts'
+import { claudeWithChannel } from './claude.ts'
+import { ANSWER_DEADLINE_MARGIN_MS, readAnswerWait } from './codex-answers.ts'
 import { PlainError } from './errors.ts'
 import { hold } from './hold.ts'
 import { init, status, uninstall } from './init.ts'
@@ -95,6 +99,8 @@ async function run(io: Io, command: Command, hook: HookRun = { fallback: '' }): 
       return uninstall(io, command)
     case 'watch':
       return watch(io, command)
+    case 'codex-answers':
+      return setAnswerWait(io, command)
     case 'refresh':
       // Detached and quiet: nobody reads what it prints, and the next hook sees the result in the credentials file.
       try {
@@ -107,6 +113,12 @@ async function run(io: Io, command: Command, hook: HookRun = { fallback: '' }): 
     case 'mcp':
       // The stdio bridge (bridge.ts): stdout carries the app's protocol messages and nothing else.
       return bridge(io, command)
+    case 'channel':
+      // The permission channel (0.33.0, channel.ts): stdout carries protocol messages and nothing else.
+      return channel(io, command)
+    case 'claude':
+      // Claude Code with the permission channel (0.33.0): its terminal, its exit code.
+      return claudeWithChannel(io, command.args)
     case 'herdr':
       // Herdr (0.17.0): `report` is the agents' writers', quiet and 0 whatever happens; the rest the plugin's. Loaded
       // only when it's run (0.21.0), with the person API's SDK it now brings, so the hooks start as fast as before.
@@ -122,6 +134,17 @@ async function run(io: Io, command: Command, hook: HookRun = { fallback: '' }): 
 
 /** A hook's hard deadline (api.ts, where the sign-in's wait for a refresh counts on it). */
 export { HOOK_DEADLINE_MS }
+
+/**
+ * How long a hook may run: HOOK_DEADLINE_MS, but Codex's PermissionRequest hook (0.34.0) waits for the person's answer
+ * on its card for the wait this computer set, so it has that and a margin, still inside the timeout Codex gives it
+ * (codex-answers.ts).
+ */
+async function deadlineOf(io: Io, command: Command): Promise<number> {
+  if (command.name !== 'permission' || command.app !== 'codex') return HOOK_DEADLINE_MS
+  const wait = await readAnswerWait(io).catch(() => 0)
+  return wait > 0 ? wait * 60_000 + ANSWER_DEADLINE_MARGIN_MS : HOOK_DEADLINE_MS
+}
 
 async function runHook(io: Io, command: Command): Promise<number> {
   const hook: HookRun = { fallback: '' }
@@ -140,9 +163,10 @@ async function runHook(io: Io, command: Command): Promise<number> {
     },
     signal: controller.signal,
   }
+  const limit = await deadlineOf(io, command)
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<'deadline'>((resolve) => {
-    timer = setTimeout(() => resolve('deadline'), Math.max(0, HOOK_DEADLINE_MS - io.uptime()))
+    timer = setTimeout(() => resolve('deadline'), Math.max(0, limit - io.uptime()))
   })
   try {
     const outcome = await Promise.race([run(hookIo, command, hook), deadline])
