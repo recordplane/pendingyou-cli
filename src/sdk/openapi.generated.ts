@@ -494,7 +494,7 @@ export type Problem = {
   type: string
   title: string
   status: number
-  code: "invalid" | "app_not_available" | "high_stakes" | "area_change" | "not_your_answer" | "forbidden" | "not_found" | "method_not_allowed" | "version_conflict" | "not_waiting" | "hold_over" | "delegated" | "conflict" | "idempotency_in_progress" | "idempotency_mismatch" | "rate_limited" | "server_error" | "not_available" | "unavailable" | (string & {})
+  code: "invalid" | "app_not_available" | "high_stakes" | "area_change" | "not_your_answer" | "forbidden" | "not_found" | "method_not_allowed" | "version_conflict" | "not_waiting" | "hold_over" | "delegated" | "conflict" | "idempotency_in_progress" | "idempotency_mismatch" | "rate_limited" | "server_error" | "not_available" | "client_outdated" | "unavailable" | (string & {})
   detail: string
   requestId?: string
   fields?: string[]
@@ -505,6 +505,27 @@ export type Problem = {
   cardStatus?: "pending" | "delegated" | "answered" | "resolved" | "snoozed" | "expired" | "cancelled" | (string & {})
   retryAfterSeconds?: number
   scope?: "read" | "write" | "answers" | "wait" | "workspace" | (string & {})
+  minimum?: string
+}
+
+export type ClientConfig = {
+  client?: {
+    name: "ios" | "web" | (string & {})
+    version: string
+    build?: number
+  }
+  status: "ok" | "update_recommended" | "update_required" | (string & {})
+  minimum?: string
+  recommended?: string
+  switches: {
+    [key: string]: boolean
+  }
+  catalog: {
+    version: string
+  }
+  presentation: {
+    v: number
+  }
 }
 
 export type ListCardsQuery = {
