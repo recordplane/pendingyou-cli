@@ -132,6 +132,30 @@ const askerName = (card: Card) => card.asker.agent?.name ?? card.asker.assistant
 export const HIGH_STAKES =
   'High stakes: answer it in Pending You, where you hold to approve. o opens it.'
 export const NOT_HERE = 'Answer this one in Pending You: o opens it.'
+
+/** The kinds of card the popup answers. /v1 may send a newer one: that one is answered in Pending You. */
+const KINDS: readonly string[] = [
+  'choice',
+  'multi',
+  'approve',
+  'text',
+  'review',
+  'action',
+  'fyi',
+  'group',
+] satisfies Card['kind'][]
+const QUESTION_KINDS: readonly string[] = [
+  'choice',
+  'multi',
+  'approve',
+  'text',
+] satisfies Question['kind'][]
+
+/** This card can be answered from the popup: this sign-in may, and the popup knows its kind (and its questions'). */
+const answersHere = (card: Card) =>
+  card.actions.includes('answer') &&
+  KINDS.includes(card.kind) &&
+  (card.questions ?? []).every((question) => QUESTION_KINDS.includes(question.kind))
 const NO_WORDS = 'Pending You takes no words on this card from Herdr: o opens it.'
 const NO_LATER = 'This card can’t go to Later from Herdr: o opens it.'
 const NO_HANDING = 'This card can’t be handed over from Herdr: o opens it.'
@@ -244,7 +268,7 @@ function listKey(state: QueueState, key: string, now: number): [QueueState, Queu
       { kind: 'targets', card },
     ]
   }
-  if (!card.actions.includes('answer')) return [{ ...state, note: NOT_HERE }, NONE]
+  if (!answersHere(card)) return [{ ...state, note: NOT_HERE }, NONE]
   return answerKey(state, card, key)
 }
 
@@ -323,6 +347,8 @@ function answerKey(state: QueueState, card: Card, key: string): [QueueState, Que
       return [{ ...state, note: 'y: got it.' }, NONE]
     case 'group':
       return groupKey(state, card, key, send)
+    default:
+      return [{ ...state, note: NOT_HERE }, NONE]
   }
 }
 
@@ -411,6 +437,8 @@ function groupKey(
       const suggestion = n ? question.text?.suggestions?.[n - 1] : undefined
       return suggestion ? answered({ text: suggestion }) : [state, NONE]
     }
+    default:
+      return [{ ...state, note: NOT_HERE }, NONE]
   }
 }
 
@@ -717,7 +745,7 @@ function askLines(card: Card, state: QueueState, room: number, now: number): str
       DIM(fit(`If you don’t answer ${fromNow(card.fallback.at, now)}: ${card.fallback.text}`)),
     )
   if (card.highStakes) lines.push(...wrap(HIGH_STAKES, room, 2))
-  else if (!card.actions.includes('answer')) lines.push(...wrap(NOT_HERE, room, 2))
+  else if (!answersHere(card)) lines.push(...wrap(NOT_HERE, room, 2))
   return lines
 }
 
@@ -758,6 +786,8 @@ function answerKeys(card: Card, state: QueueState): string[] {
             : [`1–${count(question?.options)}`]
       return [...own, 'Tab next question', 'Enter send all']
     }
+    default:
+      return []
   }
 }
 
@@ -788,7 +818,7 @@ export function keysLine(state: QueueState, now: number): string {
   if (card) {
     const busy = state.sent?.cardId === card.id && now < state.sent.until
     if (!card.highStakes && !busy) {
-      if (card.actions.includes('answer')) keys.push(...answerKeys(card, state))
+      if (answersHere(card)) keys.push(...answerKeys(card, state))
       if (card.actions.includes('reply')) keys.push('r reply')
       if (card.actions.includes('later')) keys.push('l later')
       if (card.actions.includes('delegate')) keys.push('d hand over')

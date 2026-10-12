@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.35.1 (2026-10-11)
+
+- Fixed: the Pending You popup in Herdr no longer breaks on a kind of card it doesn't know yet (or a grouped card with
+  a question of such a kind). It shows the card and says "Answer this one in Pending You: o opens it."; reply, Later,
+  hand over and open still work.
+- The person API client inside the command line follows the SDK's 0.2.0 types: the enums in what /v1 sends are open
+  (any string beside the known values), since /v1 adds values over time.
+
 ## 0.35.0 (2026-10-09)
 
 - Claude Code hears a question handed to it within seconds. When you delegate a card to one of your Claude Code agents
