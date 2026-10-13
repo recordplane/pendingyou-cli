@@ -18,7 +18,7 @@ export type Me = {
   }
   grant: {
     id: string
-    scopes: ("cards:read" | "cards:read:all" | "cards:answer" | "cards:reply" | "cards:later" | "cards:delegate" | "assistants:read" | "presence:desk" | "cards:manage" | (string & {}))[]
+    scopes: ("cards:read" | "cards:read:all" | "cards:answer" | "cards:reply" | "cards:later" | "cards:delegate" | "assistants:read" | "presence:desk" | "cards:high_stakes" | "cards:manage" | (string & {}))[]
     reach: "machine" | "all" | (string & {})
     machine?: {
       id: string
@@ -27,6 +27,9 @@ export type Me = {
     dpop: boolean
     createdAt: string
     expiresAt: string
+    yesKey?: {
+      registeredAt: string
+    }
   }
 }
 
@@ -279,6 +282,7 @@ export type Answer = {
   }
   theyDecide?: boolean
   failedStep?: number
+  handled?: "self" | "leave" | (string & {})
   by?: "you" | "go-between" | "helper" | "teammate" | (string & {})
   helper?: {
     name: string
@@ -362,9 +366,9 @@ export type Presentation = {
 }
 
 export type PresentationAction = {
-  id: "answer" | "answer.option" | "answer.approve" | "answer.decline" | "answer.done" | "answer.got_it" | "answer.allow" | "answer.deny" | "answer.send_words" | "answer.send_changes" | "answer.ask_keep_open" | "didnt_work" | "later" | "back" | "delegate" | "take_back" | "reply" | "details" | "undo" | "open_web" | (string & {})
+  id: "answer" | "answer.option" | "answer.approve" | "answer.decline" | "answer.done" | "answer.got_it" | "answer.allow" | "answer.deny" | "answer.send_words" | "answer.send_changes" | "answer.ask_keep_open" | "didnt_work" | "handle" | "skip" | "later" | "back" | "delegate" | "take_back" | "reply" | "details" | "undo" | "open_web" | (string & {})
   label: Line
-  icon: "send" | "check" | "x" | "clock" | "forward" | "reply" | "info" | "undo" | "back" | "open" | (string & {})
+  icon: "send" | "check" | "x" | "clock" | "forward" | "reply" | "info" | "undo" | "back" | "open" | "hand" | (string & {})
   place: "primary" | "secondary" | "link" | "overflow" | "dock" | (string & {})
   style: "primary" | "secondary" | "quiet" | "ghost" | "danger" | (string & {})
   confirm?: {
@@ -377,6 +381,7 @@ export type PresentationAction = {
     approved?: boolean
     choiceIds?: string[]
     theyDecide?: true
+    handled?: "self" | "leave" | (string & {})
   }
   needs?: "choice" | "words" | (string & {})
   disabledLabel?: Line
@@ -506,6 +511,15 @@ export type SeenResponse = {
   seen: boolean
 }
 
+export type HoldResponse = {
+  id: string
+  undoUntil: string
+}
+
+export type YesKeyResponse = {
+  registeredAt: string
+}
+
 export type ChangeList = {
   changes: Change[]
   cursor: string
@@ -558,7 +572,7 @@ export type Problem = {
   type: string
   title: string
   status: number
-  code: "invalid" | "app_not_available" | "high_stakes" | "area_change" | "not_your_answer" | "forbidden" | "not_found" | "method_not_allowed" | "version_conflict" | "not_waiting" | "hold_over" | "delegated" | "conflict" | "idempotency_in_progress" | "idempotency_mismatch" | "rate_limited" | "server_error" | "not_available" | "client_outdated" | "unavailable" | (string & {})
+  code: "invalid" | "app_not_available" | "high_stakes" | "yes_required" | "area_change" | "not_your_answer" | "forbidden" | "not_found" | "method_not_allowed" | "version_conflict" | "not_waiting" | "hold_over" | "delegated" | "conflict" | "idempotency_in_progress" | "idempotency_mismatch" | "rate_limited" | "server_error" | "not_available" | "client_outdated" | "unavailable" | (string & {})
   detail: string
   requestId?: string
   fields?: string[]
@@ -630,6 +644,8 @@ export type AnswerRequest = {
   }
   failedStep?: number
   askId?: string
+  handled?: "self" | "leave"
+  holdSeconds?: number
 }
 
 export type UndoRequest = Record<string, never>
@@ -660,6 +676,15 @@ export type DelegateRequest = {
 export type TakeBackRequest = Record<string, never>
 
 export type SeenRequest = Record<string, never>
+
+export type HoldRequest = {
+  /** From now: a minute ahead while the Undo is paused (asked again as it stays paused), or the time it has left once it resumes. */
+  seconds: number
+}
+
+export type YesKeyRequest = {
+  proof: string
+}
 
 export type ChangesQuery = {
   after?: string
