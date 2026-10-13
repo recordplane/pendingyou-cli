@@ -18,7 +18,7 @@ export type Me = {
   }
   grant: {
     id: string
-    scopes: ("cards:read" | "cards:read:all" | "cards:answer" | "cards:reply" | "cards:later" | "cards:delegate" | "assistants:read" | "presence:desk" | (string & {}))[]
+    scopes: ("cards:read" | "cards:read:all" | "cards:answer" | "cards:reply" | "cards:later" | "cards:delegate" | "assistants:read" | "presence:desk" | "cards:manage" | (string & {}))[]
     reach: "machine" | "all" | (string & {})
     machine?: {
       id: string
@@ -247,6 +247,7 @@ export type Card = {
     createdAt: string
   }[]
   threadCount: number
+  newReply?: NewReply
   partial?: true
   presentation?: Presentation
   url: string
@@ -299,8 +300,24 @@ export type Attachment = {
   title: string
   contentType?: string
   bytes?: number
+  width?: number
+  height?: number
   downloadUrl?: string
+  thumbUrl?: string
+  previewUrl?: string
   downloadExpiresAt?: string
+}
+
+export type NewReply = {
+  kind?: "report" | (string & {})
+  at: string
+  messageId: string
+  preview: string
+  answersYou: boolean
+  asked?: {
+    text: string
+    at: string
+  }
 }
 
 export type Presentation = {
@@ -397,6 +414,48 @@ export type CardList = {
   next?: string
 }
 
+export type Snapshot = {
+  pending: Card[]
+  later: Card[]
+  delegated: Card[]
+  done: Card[]
+  counts: {
+    pending: number
+    waiting: number
+    later: number
+    delegated: number
+    done: number
+    elsewhere?: number
+  }
+  areas: Area[]
+  groups: AreaGroup[]
+}
+
+export type Area = {
+  id: string
+  name: string
+  tint: "peri" | "sage" | "peach" | "sun" | "lilac" | "sky" | "mint" | "rose" | (string & {})
+  icon?: string
+  groupId?: string
+  position?: number
+  pinnedAt?: string
+  hiddenAt?: string
+  notify?: {
+    mode: "waiting" | "muted" | (string & {})
+    until?: string
+    stillWhenStuck: boolean
+  }
+  lastActivityAt?: string
+  systemKind?: "getting_started" | (string & {})
+  archived: boolean
+}
+
+export type AreaGroup = {
+  id: string
+  name: string
+  position: number
+}
+
 export type CardResponse = {
   card: Card
 }
@@ -440,6 +499,11 @@ export type DelegateResponse = {
   hears?: "instant" | "every-15-min" | "hourly" | "while-working" | "by-hand" | (string & {})
   undoUntil: string
   toast?: Toast
+}
+
+export type SeenResponse = {
+  id: string
+  seen: boolean
 }
 
 export type ChangeList = {
@@ -594,6 +658,8 @@ export type DelegateRequest = {
 }
 
 export type TakeBackRequest = Record<string, never>
+
+export type SeenRequest = Record<string, never>
 
 export type ChangesQuery = {
   after?: string
