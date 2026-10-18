@@ -2,6 +2,16 @@
   "name": "pendingyou",
   "version": "0.35.1",
   "description": "Pending You for your coding agents: one command sets up Claude Code, Codex, OpenCode and Pi to ask you through Pending You and hear your answers, even while they sit idle.",
+  "keywords": [
+    "pendingyou",
+    "claude-code",
+    "codex",
+    "opencode",
+    "pi",
+    "mcp",
+    "human-in-the-loop",
+    "ai-agents"
+  ],
   "license": "Apache-2.0",
   "homepage": "https://www.pendingyou.com",
   "repository": {
