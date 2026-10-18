@@ -209,13 +209,13 @@ async function deliverHanded($) {
             view = handedView(resultObject(await $.mcp.call(server, 'get_request', args)), handed, name);
         }
         catch { }
-        const claim = await $.store.get(key);
+        const stored = await $.store.get(key);
         if (!view) {
-            if (claimHeld(claim, handed.updatedAt, me))
+            if (claimHeld(stored, handed.updatedAt, me))
                 await $.store.delete(key);
             continue;
         }
-        if (!claimHeld(claim, handed.updatedAt, me)) {
+        if (!claimHeld(stored, handed.updatedAt, me)) {
             live.handedTold.set(handed.requestId, handed.updatedAt);
             continue;
         }
