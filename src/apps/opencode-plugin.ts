@@ -116,11 +116,11 @@ const HOOK_MS = 5000
 const TURN_MESSAGES = 200
 const TEXT_CHARS = 100_000
 /**
- * Pending You's card tools, under its server's name (`pendingyou_post_request`), and (0.14.0) the two that answer a
- * question the person handed the session, or give it back.
+ * Pending You's card tools, under its server's name (`pendingyou_post_request`), (0.14.0) the two that answer a
+ * question the person handed the session, or give it back, and (0.36.0) an answer of the agent's own (post_answer).
  */
 const CARD_TOOL =
-  /^[A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*_(post_request|update_request|reply_in_thread|cancel_request|answer_delegated|hand_back)$/i
+  /^[A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*_(post_request|post_answer|update_request|reply_in_thread|cancel_request|answer_delegated|hand_back)$/i
 /** How long a session that used the card tools may be handed a question: the command line's HANDED_FOR_MS. */
 export const HANDED_FOR_MS = 12 * 60 * 60_000
 /** What the toast says when the Stop check asks a session to go on. */

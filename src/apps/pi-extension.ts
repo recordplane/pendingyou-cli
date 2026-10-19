@@ -10,10 +10,12 @@
 //   turn an extension starts doesn't wait for Pi's MCP servers as a typed prompt does, so it waits for Pending You's
 //   tools itself (up to 30 seconds), as does a wake.
 // - Each message from the person: `handoff`'s line (and any answer waiting) goes with it.
-// - Each of Pending You's card tools (post, update, reply, cancel): `posted` remembers the card for the session, and
-//   the turn's words for the Stop check (codex-wake.ts).
+// - Each of Pending You's card tools (post, answer, update, reply, cancel): `posted` remembers the card for the
+//   session, and the turn's words for the Stop check (codex-wake.ts).
 // - A run that's about to settle: `stopcheck` reads its last message, and when it left the person something only in
-//   chat, the run goes on once with the reason.
+//   chat, the run goes on once with the reason. Since 0.36.0 it's given the person's prompt that started the run
+//   (`before_agent_start`'s; none for a run a wake started), so it can ask for the answer to their question on a card
+//   too; the words go to the hook on its stdin and nowhere else.
 // - The wake: one listener per session (`listen --app pi`, the same as OpenCode's plugin runs), a child of this one
 //   that waits on Pending You with Pi's own sign-in and prints `{"wake": …, "requests": […]}` when one of the
 //   session's cards is the agent's move. That starts a turn when Pi is idle, or follows the current one, in the wake
@@ -94,11 +96,12 @@ const WHOAMI = /^mcp__[A-Za-z0-9_]*pendingyou[A-Za-z0-9_]*__whoami$/i
 /** How long a closing session waits for its listener to let go of the session (a /reload starts the next one). */
 const STOP_MS = 2000
 /**
- * Pending You's card tools, under any server name with pendingyou in it (Pi names them mcp__<server>__<tool>), and
- * (0.14.0) the two that answer a question the person handed the session, or give it back.
+ * Pending You's card tools, under any server name with pendingyou in it (Pi names them mcp__<server>__<tool>), (0.14.0)
+ * the two that answer a question the person handed the session, or give it back, and (0.36.0) an answer of the agent's
+ * own (post_answer).
  */
 export const CARD_TOOL =
-  /^mcp__[A-Za-z0-9_]*pendingyou[A-Za-z0-9_]*__(post_request|update_request|reply_in_thread|cancel_request|answer_delegated|hand_back)$/i
+  /^mcp__[A-Za-z0-9_]*pendingyou[A-Za-z0-9_]*__(post_request|post_answer|update_request|reply_in_thread|cancel_request|answer_delegated|hand_back)$/i
 /** How long a session that used the card tools may be handed a question: the command line's HANDED_FOR_MS. */
 export const HANDED_FOR_MS = 12 * 60 * 60_000
 /** How a wake for a question the person handed the session starts: the command line's HANDED_PREFIX. */
@@ -274,6 +277,8 @@ export function pendingYou(setup: PiSetup, options: ExtensionOptions = {}) {
     let closed = false
     /** This run's id, for the Stop check's record of what it posted; a run lasts until Pi settles. */
     let turn: string | null = null
+    /** The person's prompt that started this run (0.36.0): the Stop check reads whether it asked something. */
+    let prompt: string | null = null
     let nudged = false
     let posting: Promise<unknown> = Promise.resolve()
     let listener: ChildProcess | null = null
@@ -486,7 +491,9 @@ export function pendingYou(setup: PiSetup, options: ExtensionOptions = {}) {
       listen()
     })
 
-    pi.on('before_agent_start', async (_event: unknown, ctx: PiContext) => {
+    pi.on('before_agent_start', async (event: { prompt?: unknown }, ctx: PiContext) => {
+      // Only a prompt starts a run this way, never a wake (sendMessage): the person's own words.
+      prompt = typeof event?.prompt === 'string' ? event.prompt : null
       listen()
       const said = await hook('handoff', { cwd: ctx.cwd || cwd, session_id: session })
       return said ? { message: { customType: TYPE, content: said, display: false } } : undefined
@@ -547,6 +554,7 @@ export function pendingYou(setup: PiSetup, options: ExtensionOptions = {}) {
             last_assistant_message: text,
             stop_hook_active: false,
             ...(startedHanded(event.context?.contextMessages, handedWakes) ? { handed: true } : {}),
+            ...(prompt !== null ? { prompt } : {}),
           }),
         )
         if (!reason) return
@@ -564,6 +572,7 @@ export function pendingYou(setup: PiSetup, options: ExtensionOptions = {}) {
 
     pi.on('agent_settled', () => {
       turn = null
+      prompt = null
       nudged = false
     })
 

@@ -48,18 +48,30 @@
 // Since 0.27.0 the next-message hook also says how to bring the app's pendingyou MCP server back while its headers
 // helper last handed over a token that had run out (mcp-health.ts): Claude Code may have been refused it, and a
 // session whose pendingyou tools fail should say so in chat rather than go quiet.
-import { getJson, SignInNeeded, Unavailable } from './api.ts'
+//
+// Since 0.36.0 (guide 2.54, docs/plans/2026-10-19-answers.md §4.6) the person's next message in a session also reads
+// that session's answers (post_answer) in Pending You: they've seen them in the chat. `POST /mcp/cli/read` with the
+// asker's params it sends today and the message's time (`at`), beside the answers' request and inside its 2-second box,
+// and only when the session posted an answer in the last day (Claude Code's transcript says when; the others' hooks
+// remember it). Pending You settles only that session's own, posted before then. It prints nothing and changes nothing
+// when it fails, and the reminder line is as it was; a Pending You wake isn't a message of theirs, so it reads nothing.
+// Codex's next-message hook also records whether the person's message asked the agent something (never the words),
+// for the Stop check's ask for the answer on a card too (stopcheck.ts).
+import { getJson, postJson, SignInNeeded, Unavailable } from './api.ts'
 import {
   computerNames,
   hearsOnly,
   keepListening,
+  markAskedTurn,
   markHandedTurn,
   sessionFor,
+  threadAnsweredAt,
   threadCards,
   threadNames,
   touchThread,
 } from './apps/codex-wake.ts'
 import { APP_NAMES, type AppId, DEFAULT_APP } from './apps/ids.ts'
+import { asksQuestion, ownWords } from './asked.ts'
 import { connectionMachine, readCredential } from './credentials.ts'
 import { environmentWarning } from './environment.ts'
 import { configDir, readJson } from './files.ts'
@@ -93,6 +105,11 @@ import { claimHanded, markHanded, momentOf, releaseHanded, wasHanded } from './s
 
 /** Each request's own limit, inside the hook's 3-second deadline (main.ts). */
 const TIME_BOX_MS = { pickup: 2500, handoff: 2000 }
+
+/** Where the next message reads the session's answers (0.36.0; the server's worker/cli/listen.ts). */
+export const READ_PATH = '/mcp/cli/read'
+/** How long after the session last posted an answer its messages read them (0.36.0): a day. */
+export const READ_FOR_MS = 24 * 60 * 60_000
 
 /**
  * How many of a folder's answers it asks for (the server's most), and how many it hands over at once. The server sends
@@ -259,39 +276,97 @@ export function folderForms(cwd: string, home: string): string[] {
   return forms
 }
 
+/** Who a session is, as its hooks tell Pending You (askerOf), and (0.36.0) when it last posted an answer. */
+export interface Asker {
+  params: [string, string][]
+  /** When the session last posted an answer (post_answer), as its transcript or its hooks say; null for none. */
+  answeredAt: number | null
+}
+
 /**
  * Who the session asking for its folder's answers is (0.25.0), as /mcp/cli/answers takes it: the cards it posted
- * (`posted`), `own` when that's every one (Claude Code's whole transcript was read), the name it goes by, and this
- * computer's names (`machine`). Pending You hands it only its own; only a session that can say none of it falls back to
- * its folder, on this computer, for a card asked under its app's name.
+ * (`posted`; its answers too since 0.36.0), `own` when that's every one (Claude Code's whole transcript was read), the
+ * name it goes by, and this computer's names (`machine`). Pending You hands it only its own; only a session that can
+ * say none of it falls back to its folder, on this computer, for a card asked under its app's name. With (0.36.0) when
+ * it last posted an answer, from the same reading.
  */
-export async function askerParams(
+export async function askerOf(
   io: Io,
   origin: string,
   app: AppId,
   session: { id: string | null; transcript: string | null; name?: string | null },
-): Promise<[string, string][]> {
+): Promise<Asker> {
   let name = session.name ?? undefined
   let posted: string[] = []
   let own = false
+  let answeredAt: number | null = null
   if (app === DEFAULT_APP) {
     const record = await sessionPosted(session.transcript ?? undefined)
     if (record) {
       posted = record.posted
       own = record.whole
+      answeredAt = record.answeredAt ?? null
     }
   } else if (session.id) {
     name ??= (await threadNames(io, app, session.id).catch(() => [])).at(-1)
     posted = (await threadCards(io, app, session.id).catch(() => [])).slice(0, POSTED_MAX)
+    answeredAt = await threadAnsweredAt(io, app, session.id).catch(() => null)
   }
   const machine = await connectionMachine(io, origin, app).catch(() => null)
   const machines = [...new Set([io.host, machine].filter((each): each is string => Boolean(each)))]
-  return [
-    ...(name ? [['name', name] as [string, string]] : []),
-    ...posted.map((id) => ['posted', id] as [string, string]),
-    ...(own ? [['own', '1'] as [string, string]] : []),
-    ...machines.slice(0, 4).map((each) => ['machine', each] as [string, string]),
-  ]
+  return {
+    params: [
+      ...(name ? [['name', name] as [string, string]] : []),
+      ...posted.map((id) => ['posted', id] as [string, string]),
+      ...(own ? [['own', '1'] as [string, string]] : []),
+      ...machines.slice(0, 4).map((each) => ['machine', each] as [string, string]),
+    ],
+    answeredAt,
+  }
+}
+
+/** The asker's params alone (askerOf), as the Stop check asks for the session's open cards. */
+export const askerParams = async (
+  io: Io,
+  origin: string,
+  app: AppId,
+  session: { id: string | null; transcript: string | null; name?: string | null },
+): Promise<[string, string][]> => (await askerOf(io, origin, app, session)).params
+
+/**
+ * Whether the person's message reads the session's answers (0.36.0): it posted one in the last day, and the message
+ * is theirs (a Pending You wake isn't: it starts a turn without them). A message the hook can't see counts as theirs:
+ * OpenCode's plugin and Pi's extension run the hand-off for the person's messages only.
+ */
+export const readsAnswers = (asker: Asker, prompt: string | null, now: number) =>
+  asker.answeredAt !== null &&
+  now - asker.answeredAt < READ_FOR_MS &&
+  (prompt === null || ownWords(prompt) !== null)
+
+/**
+ * `POST /mcp/cli/read` (0.36.0): the person wrote again in the session, so its answers in Pending You from before now
+ * were read here. The folder and who the session is, as the answers' request says them, and the message's time. Inside
+ * the hand-off's 2-second box; it prints nothing, and on any failure nothing changes.
+ */
+async function readHere(
+  io: Io,
+  origin: string,
+  app: AppId,
+  cwd: string,
+  asker: Asker,
+): Promise<void> {
+  try {
+    const query = new URLSearchParams([
+      ...folderForms(cwd, io.home).map((form) => ['cwd', form] as [string, string]),
+      ['source', app],
+      ...asker.params,
+      ['at', new Date(io.now()).toISOString()],
+    ])
+    await postJson(io, origin, `${READ_PATH}?${query}`, {}, TIME_BOX_MS.handoff, {
+      app,
+      signal: io.signal,
+    })
+  } catch {}
 }
 
 export async function pickup(
@@ -312,6 +387,8 @@ export async function pickup(
   // The next message's line while the app's pendingyou MCP server may be stuck: its helper last handed over a token that
   // had run out (0.27.0, mcp-health.ts).
   let stuck: string | null = null
+  // The next message's read of the session's answers (0.36.0), beside the answers' request; waited for at the end.
+  let reading: Promise<void> | null = null
   try {
     const input = await hookInput(io)
     const { cwd } = input
@@ -363,6 +440,10 @@ export async function pickup(
       // A turn that starts with a question the person handed it isn't asked to put its words on a card of its own.
       if (app === 'codex' && input.turn && isHandedWake(input.prompt ?? ''))
         await markHandedTurn(io, input.turn, app).catch(() => {})
+      // One that starts with a question of the person's own (0.36.0): its answer goes on a card too. Whether, never
+      // the words.
+      else if (app === 'codex' && mode === 'handoff' && input.turn && asksQuestion(input.prompt))
+        await markAskedTurn(io, input.turn, app).catch(() => {})
     }
     // A Codex thread whose cards still wait on the person is woken when they answer (apps/codex-wake.ts), and one that
     // may be handed a question when it is.
@@ -374,17 +455,21 @@ export async function pickup(
         ? sessionName(input.transcript ?? undefined).then((name) => (name ? [name] : []))
         : null
     const named = claudeNames ? (await claudeNames)[0] : undefined
+    const asker = await askerOf(io, origin, app, {
+      id: input.session,
+      transcript: input.transcript,
+      name: named ?? null,
+    })
+    // Their message: the session's answers in Pending You were read here (0.36.0), beside the answers' request.
+    if (mode === 'handoff' && readsAnswers(asker, input.prompt, io.now()))
+      reading = readHere(io, origin, app, cwd, asker)
     const query = new URLSearchParams([
       ...folderForms(cwd, io.home).map((form) => ['cwd', form] as [string, string]),
       ['limit', String(ANSWERS_ASKED)],
       ...(mode === 'handoff' ? [['open', String(OPEN_SHOWN)] as [string, string]] : []),
       ['source', app],
       // Only this session's own answers and open cards (0.25.0).
-      ...(await askerParams(io, origin, app, {
-        id: input.session,
-        transcript: input.transcript,
-        name: named ?? null,
-      })),
+      ...asker.params,
     ])
     const { status, body } = await getJson<{
       ok?: boolean
@@ -507,5 +592,7 @@ export async function pickup(
   } finally {
     const last = [line, warning, reminder, unwoken, stuck].filter(Boolean)
     if (last.length) io.out(`${last.join('\n')}\n`)
+    // The read prints nothing: waited for only so the hook doesn't end before it's sent (its own box, 2 seconds).
+    await reading
   }
 }

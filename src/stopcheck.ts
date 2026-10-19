@@ -37,10 +37,21 @@
 // in the message is for the person is checked as before, so a new ask beside a recap still goes on a card; but when the
 // message talks about cards at all, it's taken as a recap while this folder has a card waiting on them (the same
 // request, the same 1.5 seconds; when Pending You can't say, the turn ends).
+//
+// Since 0.36.0 (guide 2.54, docs/plans/2026-10-19-answers.md §4.5) it also asks for the answer to a question the person
+// asked, on a card too: when the person's own message started the turn and asked something (asked.ts), the final
+// message answers it (isAnswer: 30 words or more outside code, or a table, and not only a recap of cards), and the
+// turn put nothing in Pending You (post_answer counts, with the other card tools), it asks once to post_answer it, or
+// to say it doesn't need one (ANSWER_REASON). After today's checks for a handed question, an ask to type here and a
+// card posted, and before the one for items left in chat. The person's message: Claude Code's transcript; whether it
+// asked, as Codex's next-message hook records it (never the words), and only once Codex's PostToolUse hook sees
+// post_answer (codex.ts's codexSeesAnswers); the first message of OpenCode's turn; the prompt that started Pi's run.
 import { open } from 'node:fs/promises'
 import { getJson } from './api.ts'
+import { codexSeesAnswers } from './apps/codex.ts'
 import { markNudged, turnRecord } from './apps/codex-wake.ts'
 import { APP_NAMES, type AppId, DEFAULT_APP } from './apps/ids.ts'
+import { asksQuestion, wordsOf } from './asked.ts'
 import { asksToTypeHere, cardFits, confirmReason, sessionLink } from './confirm.ts'
 import { readCredential } from './credentials.ts'
 import { isHandedWake } from './format.ts'
@@ -70,11 +81,21 @@ export const DELEGATED_REASON =
   'Your person handed you that question to answer, not to ask them back: answer_delegated if you know, or hand_back with what you checked, unless you already did. Never post it as a card of your own.'
 
 /**
+ * What an agent reads when its person asked it something and its answer is only in chat (0.36.0, guide 2.54): about 29
+ * tokens.
+ */
+export const ANSWER_REASON =
+  'Your person asked you something and your answer is only in chat: post_answer it too, or say it doesn’t need one.'
+
+/** The fewest words outside code a final message answers in (0.36.0, §4.5); fewer, with no table, is back-and-forth. */
+export const ANSWER_WORDS = 30
+
+/**
  * Tools that put something in front of the person: Pending You's, under any MCP server name. Since 0.14.0 also the two
- * that answer a question the person handed the agent, or give it back.
+ * that answer a question the person handed the agent, or give it back; since 0.36.0 an answer of its own (post_answer).
  */
 const POSTING_TOOL =
-  /^mcp__.+__(post_request|update_request|reply_in_thread|answer_delegated|hand_back)$/
+  /^mcp__.+__(post_request|post_answer|update_request|reply_in_thread|answer_delegated|hand_back)$/
 
 /** How long it waits for this folder's open cards, inside the hook's 3-second deadline (main.ts). */
 export const OPEN_TIME_BOX_MS = 1500
@@ -137,7 +158,7 @@ const STEPS_FOR_THEM =
  * needed.", "Nothing needs your attention.", "There’s nothing waiting on you.").
  */
 const SAYS_NO_CARD =
-  /\bno (?:new |more |further )?cards? (?:is |are )?(?:needed|necessary|required)\b|\b(?:doesn(?:'|’)t|don(?:'|’)t|does not|do not|won(?:'|’)t|will not) need (?:a |any )?(?:new )?cards?\b|\bnothing (?:here |else |more |now )?(?:needs|requires) your (?:attention|input|action|answer)\b|\b(?:nothing|no cards?)\b[^.,;:!?\n]{0,40}\b(?:waiting|pending) (?:on|for) you\b/i
+  /\bno (?:new |more |further |answer )?cards? (?:is |are )?(?:needed|necessary|required)\b|\b(?:doesn(?:'|’)t|don(?:'|’)t|does not|do not|won(?:'|’)t|will not) need (?:a |an |any )?(?:new |answer )?cards?\b|\bnothing (?:here |else |more |now )?(?:needs|requires) your (?:attention|input|action|answer)\b|\b(?:nothing|no cards?)\b[^.,;:!?\n]{0,40}\b(?:waiting|pending) (?:on|for) you\b/i
 
 /** A heading over a list of things for the person. */
 const FOR_THEM_HEADING =
@@ -247,6 +268,47 @@ export function itemsOutsideRecaps(text: string): 'question' | 'steps' | 'list' 
   return itemsIn(withoutRecaps(plainText(text)))
 }
 
+/** The text without code, fenced or inline: an answer's words are what's said around it (0.36.0). */
+function withoutCode(text: string): string {
+  const kept: string[] = []
+  let fence: string | null = null
+  for (const line of text.split('\n')) {
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1]
+    if (fence) {
+      if (marker?.startsWith(fence)) fence = null
+      continue
+    }
+    if (marker) {
+      fence = marker
+      continue
+    }
+    kept.push(line.replace(/`[^`]*`/g, ' '))
+  }
+  return kept.join('\n')
+}
+
+/** A Markdown table: a row with a "|", then its delimiter row (`| --- | ---: |`). */
+function hasTable(text: string): boolean {
+  const lines = text.split('\n')
+  return lines.some(
+    (line, index) =>
+      index > 0 &&
+      line.includes('|') &&
+      line.includes('-') &&
+      /^[\s|:-]+$/.test(line) &&
+      (lines[index - 1] ?? '').includes('|'),
+  )
+}
+
+/**
+ * Whether a final message answers what the person asked (0.36.0, §4.5): ANSWER_WORDS words or more outside code, or a
+ * table, and not only a recap of cards already in front of them.
+ */
+export function isAnswer(text: string): boolean {
+  const said = withoutRecaps(withoutCode(text))
+  return wordsOf(said).length >= ANSWER_WORDS || hasTable(said)
+}
+
 /** Whether the text says the items are already in Pending You. */
 export const saysPosted = (text: string) => SAYS_POSTED.test(plainText(text))
 
@@ -320,6 +382,8 @@ export interface LastTurn {
   cards: string[]
   /** Whether the turn started with a question the person handed the agent (0.14.0): the wake mod's prompt. */
   handed: boolean
+  /** Whether the person's own message started the turn, and asked the agent something (0.36.0, asked.ts). */
+  asked: boolean
   /** Whether the start of the turn was found within the cap. */
   complete: boolean
   bytesRead: number
@@ -340,6 +404,7 @@ export async function lastTurn(path: string, cap = READ_CAP): Promise<LastTurn> 
     let finalDone = false
     let posted = false
     let handed = false
+    let asked = false
     const cards: string[] = []
     const take = (raw: string): boolean => {
       if (!raw.trim()) return false
@@ -351,7 +416,9 @@ export async function lastTurn(path: string, cap = READ_CAP): Promise<LastTurn> 
       }
       if (entry.isSidechain) return false
       if (startsTurn(entry)) {
-        handed = startsHanded(startText(entry))
+        const words = startText(entry)
+        handed = startsHanded(words)
+        asked = !handed && asksQuestion(words)
         return true
       }
       if (entry.type !== 'assistant' || !Array.isArray(entry.message?.content)) return false
@@ -381,15 +448,23 @@ export async function lastTurn(path: string, cap = READ_CAP): Promise<LastTurn> 
       let newline = buffer.lastIndexOf(10)
       while (newline !== -1) {
         if (take(buffer.subarray(newline + 1).toString('utf8')))
-          return { text: texts.join('\n'), posted, cards, handed, complete: true, bytesRead }
+          return { text: texts.join('\n'), posted, cards, handed, asked, complete: true, bytesRead }
         buffer = buffer.subarray(0, newline)
         newline = buffer.lastIndexOf(10)
       }
       carry = buffer
     }
     if (position === 0 && take(carry.toString('utf8')))
-      return { text: texts.join('\n'), posted, cards, handed, complete: true, bytesRead }
-    return { text: texts.join('\n'), posted, cards, handed, complete: position === 0, bytesRead }
+      return { text: texts.join('\n'), posted, cards, handed, asked, complete: true, bytesRead }
+    return {
+      text: texts.join('\n'),
+      posted,
+      cards,
+      handed,
+      asked,
+      complete: position === 0,
+      bytesRead,
+    }
   } finally {
     await file.close()
   }
@@ -412,11 +487,16 @@ interface StopInput {
   background_tasks?: unknown
   /** Pi's extension's (0.14.0): the run started with a question the person handed the session. */
   handed?: unknown
+  /** Pi's extension's (0.36.0): the person's prompt that started the run (`before_agent_start`), none for a wake. */
+  prompt?: unknown
 }
 
-/** OpenCode's tools that put something in front of the person: Pending You's, under its server's name. */
+/**
+ * OpenCode's tools that put something in front of the person: Pending You's, under its server's name (post_answer since
+ * 0.36.0).
+ */
 const OPENCODE_POSTING =
-  /^[A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*_(post_request|update_request|reply_in_thread|answer_delegated|hand_back)$/i
+  /^[A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*_(post_request|post_answer|update_request|reply_in_thread|answer_delegated|hand_back)$/i
 
 /** What the Stop check knows of a turn. */
 interface Turn {
@@ -428,6 +508,8 @@ interface Turn {
   cards: string[]
   /** Whether a question the person handed the agent started it (0.14.0). */
   handed: boolean
+  /** Whether the person's own message started it, and asked the agent something (0.36.0). */
+  asked: boolean
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -455,6 +537,21 @@ function opencodeTurn(input: StopInput): Turn | null {
       typeof part.text === 'string' &&
       startsHanded(part.text),
   )
+  // The person's own words (0.36.0): their text parts, not the plugin's (the hand-off's line is synthetic and marked);
+  // a turn a wake of the plugin's started has none of theirs.
+  const own = partsOf(first).some((part) => part.pendingyou === 'wake')
+    ? ''
+    : partsOf(first)
+        .flatMap((part) =>
+          part.type === 'text' &&
+          part.synthetic !== true &&
+          part.pendingyou === undefined &&
+          typeof part.text === 'string'
+            ? [part.text]
+            : [],
+        )
+        .join('\n')
+  const asked = !handed && asksQuestion(own)
   const answers = rest.filter((message) => message.role === 'assistant')
   if (answers.at(-1)?.error === 'MessageAbortedError') return null
   let final: string[] = []
@@ -477,7 +574,7 @@ function opencodeTurn(input: StopInput): Turn | null {
         final.push(part.text)
     }
   const text = final.join('\n').trim()
-  return text ? { text, posted, cards, handed } : null
+  return text ? { text, posted, cards, handed, asked } : null
 }
 
 /**
@@ -532,11 +629,18 @@ async function turnOf(io: Io, input: StopInput, app: AppId): Promise<Turn | null
     if (typeof input.turn_id !== 'string' || !input.turn_id || !final) return null
     const record = await turnRecord(io, input.turn_id, app)
     if (record?.nudged) return null
+    const handed = Boolean(record?.delegated) || input.handed === true
     return {
       text: final,
       posted: Boolean(record?.cards.length),
       cards: record?.cards ?? [],
-      handed: Boolean(record?.delegated) || input.handed === true,
+      handed,
+      // Whether their own message asked (0.36.0): what Codex's next-message hook recorded, or Pi's run's prompt.
+      asked:
+        !handed &&
+        (app === 'codex'
+          ? record?.asked === true
+          : typeof input.prompt === 'string' && asksQuestion(input.prompt)),
     }
   }
   if (app === 'opencode') {
@@ -551,6 +655,7 @@ async function turnOf(io: Io, input: StopInput, app: AppId): Promise<Turn | null
       posted: turn.posted || Boolean(record?.cards.length),
       cards: [...turn.cards, ...(record?.cards ?? [])],
       handed: turn.handed,
+      asked: turn.asked,
     }
   }
   if (typeof input.transcript_path !== 'string' || !input.transcript_path) return null
@@ -558,8 +663,17 @@ async function turnOf(io: Io, input: StopInput, app: AppId): Promise<Turn | null
   if (!turn.complete) return null
   // The transcript can lag the final message; Claude Code hands it over itself.
   const text = final || turn.text
-  return text ? { text, posted: turn.posted, cards: turn.cards, handed: turn.handed } : null
+  return text
+    ? { text, posted: turn.posted, cards: turn.cards, handed: turn.handed, asked: turn.asked }
+    : null
 }
+
+/**
+ * Whether the app tells the hooks about every answer it posts (0.36.0): Codex only once init has given its PostToolUse
+ * hook post_answer and the person trusts it, else a turn that posted one would look as if it posted nothing.
+ */
+const seesAnswers = (io: Io, app: AppId) =>
+  app === 'codex' ? codexSeesAnswers(io).catch(() => false) : Promise.resolve(true)
 
 export async function stopcheck(io: Io, options: { origin: string; app?: AppId }): Promise<number> {
   const app = options.app ?? DEFAULT_APP
@@ -610,7 +724,10 @@ export async function stopcheck(io: Io, options: { origin: string; app?: AppId }
         return 0
       return block(confirmReason(ask.words, sessionLink(io.env), APP_NAMES[app]))
     }
-    if (turn.posted || saysPosted(text) || saysNoCard(text) || !itemsOutsideRecaps(text)) return 0
+    if (turn.posted || saysPosted(text) || saysNoCard(text)) return 0
+    // Their own question, answered only in chat (0.36.0, guide 2.54): the answer goes on a card too.
+    if (turn.asked && isAnswer(text) && (await seesAnswers(io, app))) return block(ANSWER_REASON)
+    if (!itemsOutsideRecaps(text)) return 0
     // Something for them outside any recap (0.19.0). A message that talks about cards may be recapping ones already
     // open in words no pattern knows: asked only then, any card of this folder's still waiting on them (not a
     // permission prompt's, which the hooks post) says it is. Not known (offline, slow, an older server): let it end.

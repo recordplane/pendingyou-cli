@@ -234,6 +234,28 @@ it or hand it back instead (about 45 tokens). Codex's hook for Pending You's too
 tools, which doesn't name those two, so there the check knows only that the turn started with one (when Codex gives the
 message to its next-message hook), and says “unless you already did”.
 
+### Answers to your questions (0.36.0)
+
+When you ask an agent something and it answers, the answer goes in Pending You too (`post_answer`, guide 2.54): it
+waits in your Pending under your question, quiet while you're in the chat. Two things help:
+
+- **At the end of a turn**, when your own message started it and asked something, its last message answers it (30
+  words or more outside code, or a table, and not only a recap of cards), and nothing was posted to Pending You in
+  that turn, the agent is asked once (about 29 tokens): *Your person asked you something and your answer is only in
+  chat: post_answer it too, or say it doesn’t need one.* Your question is read leniently, since dictation often has
+  no "?": a "?" in its first sentence or one of its last three, a question word and three more words ("pending you how
+  many calls did billing get last week"), or asking for facts ("tell me what broke", "how many", "check whether"). Not
+  a request for work ("Can you fix the flaky test?", "Deploy it to staging", "When you're done, push it", "Do the
+  migration"), anything under four words without a "?" ("yes", "go on"), or a turn Pending You started. Claude Code's
+  question comes from its transcript; Codex's next-message hook notes whether it asked (never your words), and the
+  check stays off on a computer until `init` has given Codex's hook for Pending You's tools `post_answer` and you've
+  trusted it again in `/hooks`; OpenCode's plugin reads the turn's first message, and Pi's extension hands over the
+  prompt that started the run.
+- **Your next message** in that session marks the answers it posted as read in Pending You (`POST /mcp/cli/read`), so
+  they leave your Pending without a notification: you've seen them in the chat. Only that session's own, posted before
+  your message, and only when it posted one in the last day; beside the hand-off's request, inside its 2 seconds. It
+  prints nothing, and when it fails nothing changes: an unread answer notifies you once, after your hand-off time.
+
 **On 0.2.0 with another origin?** Its hooks blocked every message (`There's no "--origin" command`). Run
 `npx pendingyou@latest init --origin <url>` again to repair them; see [CHANGELOG.md](CHANGELOG.md).
 

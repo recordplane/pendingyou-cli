@@ -196,7 +196,7 @@ const TRANSCRIPT_CAP = 4 * 1024 * 1024
 const SESSION = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/
 /** Pending You's tools that carry the asking session's name, under any server name (the plugin's too). */
 const NAMED_TOOL =
-  /^mcp__.*pendingyou.*__(whoami|post_request|update_request|cancel_request|reply_in_thread|get_request|ack_answer|list_pending|get_attachment)$/i
+  /^mcp__.*pendingyou.*__(whoami|post_request|post_answer|update_request|cancel_request|reply_in_thread|get_request|ack_answer|list_pending|get_attachment)$/i
 
 /** One prompt the person hasn't answered: its card's words, which agent asked (a subagent's id), and when. */
 export interface Prompt {
@@ -1111,9 +1111,9 @@ export async function sessionName(path: string | undefined): Promise<string | nu
   }
 }
 
-/** Pending You's post_request, under any server name (the plugin's too). */
-const POST_TOOL = /^mcp__.*pendingyou.*__post_request$/i
-/** The card a post_request's result names. */
+/** Pending You's post_request, and (0.36.0) post_answer, under any server name (the plugin's too). */
+const POST_TOOL = /^mcp__.*pendingyou.*__(post_request|post_answer)$/i
+/** The card a post_request's (or a post_answer's) result names. */
 const POSTED_ID = /"requestId"\s*:\s*"(req_[A-Za-z0-9-]{1,40})"/
 /** The most cards a session names as its own (the server's hear_answers `posted` takes as many). */
 export const POSTED_MAX = 50
@@ -1129,11 +1129,12 @@ function resultText(content: unknown): string {
  * The cards this very session posted (CLI 0.25.0), as its transcript says: each post_request of its own (never a
  * subagent's) and the request id its result named, newest first, at most POSTED_MAX. `whole` when that's every one: the
  * transcript was read to its start and held no more, or there's none yet (a session just started has posted nothing).
- * Null when it can't be read.
+ * Null when it can't be read. Since 0.36.0 its answers too (post_answer), and `answeredAt`: when the newest of them was
+ * posted, by its entry's time, for the next message's read (pickup.ts).
  */
 export async function sessionPosted(
   path: string | undefined,
-): Promise<{ posted: string[]; whole: boolean } | null> {
+): Promise<{ posted: string[]; whole: boolean; answeredAt?: number } | null> {
   if (!path) return null
   let file: Awaited<ReturnType<typeof open>>
   try {
@@ -1149,9 +1150,10 @@ export async function sessionPosted(
     const results = new Map<string, string>()
     const posted: string[] = []
     let more = false
+    let answeredAt: number | undefined
     const read = (line: string) => {
       const asResult = line.includes('tool_result') && line.includes('req_')
-      const asCall = line.includes('post_request')
+      const asCall = line.includes('post_request') || line.includes('post_answer')
       if (!asResult && !asCall) return
       let entry: unknown
       try {
@@ -1173,7 +1175,16 @@ export async function sessionPosted(
           POST_TOOL.test(text(block.name))
         ) {
           const id = results.get(text(block.id))
-          if (!id || posted.includes(id)) continue
+          if (!id) continue
+          // Read from the end: the first answer met is the newest (0.36.0).
+          const at = Date.parse(text(entry.timestamp))
+          if (
+            answeredAt === undefined &&
+            /post_answer$/i.test(text(block.name)) &&
+            Number.isFinite(at)
+          )
+            answeredAt = at
+          if (posted.includes(id)) continue
           if (posted.length < POSTED_MAX) posted.push(id)
           else more = true
         }
@@ -1194,7 +1205,11 @@ export async function sessionPosted(
       carry = buffer
     }
     if (position === 0) read(carry.toString('utf8'))
-    return { posted, whole: position === 0 && !more }
+    return {
+      posted,
+      whole: position === 0 && !more,
+      ...(answeredAt !== undefined ? { answeredAt } : {}),
+    }
   } catch {
     return null
   } finally {

@@ -11,7 +11,8 @@
 //   an OAuth sign-in in the browser at once.
 // - Its skill is ~/.agents/skills/pendingyou/SKILL.md: the guide's stub, as for Claude Code.
 // - Its hooks are in ~/.codex/hooks.json, Claude Code's shape: SessionStart (pickup; startup, resume or clear),
-//   UserPromptSubmit (handoff), PostToolUse on Pending You's card tools (posted: codex-wake.ts) and Stop (stopcheck),
+//   UserPromptSubmit (handoff), PostToolUse on Pending You's card tools (posted: codex-wake.ts; post_answer among them
+//   since 0.36.0, which the Stop check's ask for an answer waits on: codexSeesAnswers) and Stop (stopcheck),
 //   each through the shim with `--app codex`. Codex runs a hook only while the person trusts its exact definition (a
 //   hash of it, under [hooks.state."<file>:<event>:<group>:<handler>"] in config.toml), and skips an untrusted or
 //   changed one without a word: the shim keeps definitions the same across versions, new entries go at the end (the
@@ -125,8 +126,14 @@ export function trustSteps(found: CodexProgram | null): string[] {
 /** What undoes init in the Codex app: its MCP settings' Save writes the table again without the helper. */
 const DONT_SAVE =
   'In the Codex app, don’t press Save on pendingyou in Settings › MCP: that writes it again without this computer’s sign-in (if you did, run init again to put it back).'
-/** The Pending You tools whose calls the PostToolUse hook reads (codex-wake.ts). */
-const CARD_TOOLS = '^mcp__pendingyou__(post_request|update_request|reply_in_thread|cancel_request)$'
+/**
+ * The Pending You tools whose calls the PostToolUse hook reads (codex-wake.ts): post_answer since 0.36.0, so init
+ * rewrites the matcher of a hook an earlier one wrote, which Codex then runs only once the person trusts it again.
+ */
+const CARD_TOOLS =
+  '^mcp__pendingyou__(post_request|post_answer|update_request|reply_in_thread|cancel_request)$'
+/** How Codex names post_answer to its hooks: the tool the Stop check needs the PostToolUse hook to see (0.36.0). */
+const POST_ANSWER = 'mcp__pendingyou__post_answer'
 
 /** Codex's hooks, by event: the command each runs, and its matcher. */
 export const CODEX_HOOKS: readonly HookSpec[] = [
@@ -380,6 +387,32 @@ async function readHookTrust(
 /** Our hooks that are in hooks.json and that Codex won't run until the person trusts them (again). */
 const untrusted = async (io: Pick<Io, 'env' | 'home'>) =>
   (await readHookTrust(io)).filter((hook) => hook.trust === 'untrusted' || hook.trust === 'changed')
+
+/**
+ * Whether Codex here tells the hooks about the answers its threads post (0.36.0): our PostToolUse hook for the card
+ * tools has a matcher that takes post_answer, and the person trusts it as it is. Until init (0.36.0 or later) has
+ * rewritten it and they've trusted it again, a turn that posted an answer would look to the Stop check as if it posted
+ * nothing, so the check for an answer left only in chat stays off (stopcheck.ts). False on anything it can't read.
+ */
+export async function codexSeesAnswers(io: Pick<Io, 'env' | 'home'>): Promise<boolean> {
+  try {
+    const file = await readHooksFile(io)
+    if (!('json' in file)) return false
+    const hooks =
+      file.json.hooks && typeof file.json.hooks === 'object' ? (file.json.hooks as Json) : {}
+    const groups = Array.isArray(hooks.PostToolUse) ? (hooks.PostToolUse as HookGroup[]) : []
+    const ours = groups.find((group) =>
+      (group?.hooks ?? []).some((hook) => isOurHook(hook?.command, 'posted')),
+    )
+    if (typeof ours?.matcher !== 'string' || !new RegExp(ours.matcher).test(POST_ANSWER))
+      return false
+    return (await readHookTrust(io)).some(
+      (hook) => hook.sub === 'posted' && hook.trust === 'trusted',
+    )
+  } catch {
+    return false
+  }
+}
 
 /** Whether `codex mcp list` says Codex holds an OAuth sign-in for its pendingyou server; null when it can't say. */
 async function signedInByItself(io: Io, program: string): Promise<boolean | null> {

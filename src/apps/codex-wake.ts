@@ -2,9 +2,10 @@
 // cards a thread (OpenCode, Pi: a session) posted, and the listener that wakes the thread when one is answered.
 //
 // - `pendingyou posted --app codex` is Codex's PostToolUse hook for Pending You's card tools (post_request,
-//   update_request, reply_in_thread, cancel_request; Codex runs it only for a call that didn't fail). It records that
-//   the turn put something in front of the person (with the card's words, for the Stop check: stopcheck.ts), and which
-//   thread is waiting on which card (`session_id` is the thread's id), then makes sure that thread has a listener.
+//   post_answer since 0.36.0, update_request, reply_in_thread, cancel_request; Codex runs it only for a call that
+//   didn't fail). It records that the turn put something in front of the person (with the card's words, for the Stop
+//   check: stopcheck.ts), and which thread is waiting on which card (`session_id` is the thread's id), then makes sure
+//   that thread has a listener.
 //   OpenCode's plugin runs it from `tool.execute.after` (apps/opencode-plugin.ts), and Pi's extension from Pi's
 //   `tool_result` (apps/pi-extension.ts), with the same fields.
 // - `pendingyou listen --app codex --thread <id>` is that listener: one per thread (a lease file), detached, holding no
@@ -98,7 +99,10 @@ interface ThreadCard {
 /** One Codex thread (or OpenCode or Pi session) the hooks know. */
 interface Thread {
   origin: string
-  /** Its cards still in front of the person, by request id. */
+  /**
+   * Its cards still in front of the person, by request id. Its answers too (post_answer, 0.36.0): a Reply on one wakes
+   * it, as an answer does, and one read or settled leaves as any card does.
+   */
   cards: Record<string, ThreadCard>
   /** When it last used Pending You's card tools, or (0.14.0) heard from the person. */
   at: number
@@ -108,6 +112,11 @@ interface Thread {
   cwd?: string
   /** The Herdr pane it runs in (0.17.0, herdr.ts), while it's open there: its cards are that pane's badges. */
   herdr?: string
+  /**
+   * When it last posted an answer (post_answer, 0.36.0): the next message, within a day, reads its answers in Pending
+   * You (pickup.ts's read).
+   */
+  answeredAt?: number
 }
 
 /** What an app's hooks remember (codex-threads.json, opencode-threads.json, pi-threads.json). */
@@ -118,8 +127,14 @@ interface ThreadState {
    * HANDED_FOR_MS, by thread id.
    */
   threads: Record<string, Thread>
-  /** Each turn that posted, changed or replied on a card, by turn id: the words of each (the Stop check's). */
-  turns: Record<string, { at: number; cards: string[]; nudged?: boolean; delegated?: boolean }>
+  /**
+   * Each turn that posted, changed or replied on a card, by turn id: the words of each (the Stop check's); and (0.36.0)
+   * each whose person's message asked the agent something (`asked`: whether, never the words).
+   */
+  turns: Record<
+    string,
+    { at: number; cards: string[]; nudged?: boolean; delegated?: boolean; asked?: boolean }
+  >
 }
 
 /** How long a turn's record, and a thread untouched, are kept. */
@@ -147,10 +162,10 @@ const NAMES = 5
 /**
  * Pending You's card tools as Codex and Pi name them: `mcp__pendingyou__post_request`. Since 0.14.0 also the two that
  * answer a question handed to the session (D21), which Pi's extension reports; Codex's hook is trusted by its exact
- * matcher (codex.ts), which names only the four.
+ * matcher (codex.ts), which names only its own five. Since 0.36.0 an answer of the agent's own (post_answer).
  */
 const MCP_CARD_TOOL =
-  /^mcp__([A-Za-z0-9_]*pendingyou[A-Za-z0-9_]*)__(post_request|update_request|reply_in_thread|cancel_request|answer_delegated|hand_back)$/i
+  /^mcp__([A-Za-z0-9_]*pendingyou[A-Za-z0-9_]*)__(post_request|post_answer|update_request|reply_in_thread|cancel_request|answer_delegated|hand_back)$/i
 /**
  * The card calls the hook reads, on a Pending You server: Codex and Pi name a tool `mcp__pendingyou__post_request`,
  * OpenCode `pendingyou_post_request` (the server's name, `_`, the tool's).
@@ -158,7 +173,7 @@ const MCP_CARD_TOOL =
 const CARD_TOOLS: Partial<Record<AppId, RegExp>> = {
   codex: MCP_CARD_TOOL,
   opencode:
-    /^([A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*)_(post_request|update_request|reply_in_thread|cancel_request|answer_delegated|hand_back)$/i,
+    /^([A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*)_(post_request|post_answer|update_request|reply_in_thread|cancel_request|answer_delegated|hand_back)$/i,
   pi: MCP_CARD_TOOL,
 }
 /** The calls that answer a question handed to the session (D21): never a card of its own. */
@@ -197,6 +212,9 @@ function threadOf(value: unknown): Thread | null {
     ...(names.length ? { names: names.slice(-NAMES) } : {}),
     ...(typeof value.cwd === 'string' && value.cwd ? { cwd: value.cwd } : {}),
     ...(typeof value.herdr === 'string' && PANE_ID.test(value.herdr) ? { herdr: value.herdr } : {}),
+    ...(typeof value.answeredAt === 'number' && Number.isFinite(value.answeredAt)
+      ? { answeredAt: value.answeredAt }
+      : {}),
   }
 }
 
@@ -354,6 +372,8 @@ export async function posted(io: Io, options: { origin: string; app: AppId }): P
       }
       if (cwd) waiting.cwd = cwd
       if (pane) waiting.herdr = pane.pane
+      // An answer of its own (0.36.0): its next message reads the thread's answers, within a day.
+      if (call === 'post_answer' && requestId) waiting.answeredAt = now
       waiting.origin = options.origin
       waiting.at = now
       state.threads[thread] = waiting
@@ -480,6 +500,31 @@ export async function threadCards(
   return Object.keys(cards).filter((id) => REQUEST_ID.test(id))
 }
 
+/** When a thread last posted an answer (0.36.0), as its hooks remember it; null for none, or a thread they don't know. */
+export async function threadAnsweredAt(
+  io: Pick<Io, 'env' | 'home'>,
+  app: AppId,
+  thread: string | null,
+): Promise<number | null> {
+  if (!thread) return null
+  return (await load(io, app).catch(() => null))?.threads[thread]?.answeredAt ?? null
+}
+
+/**
+ * Remembers that the person's message that started a turn asked the agent something (0.36.0, asked.ts): the Stop
+ * check asks for its answer on a card too. Whether, never the words.
+ */
+export async function markAskedTurn(
+  io: Pick<Io, 'env' | 'home' | 'now' | 'sleep'>,
+  turn: string,
+  app: AppId,
+): Promise<void> {
+  const now = io.now()
+  await change(io, app, (state) => {
+    state.turns[turn] = { ...(state.turns[turn] ?? { cards: [] }), at: now, asked: true }
+  })
+}
+
 /**
  * Remembers that a turn started with a question the person handed the session (0.14.0): its Stop check doesn't ask it
  * to post its words as a card of its own (stopcheck.ts).
@@ -576,20 +621,21 @@ export async function sessionFor(
 }
 
 /**
- * Whether this turn put something in front of the person, the words of each card, whether it was nudged, and (0.14.0)
- * whether a question the person handed the session started it.
+ * Whether this turn put something in front of the person, the words of each card, whether it was nudged, (0.14.0)
+ * whether a question the person handed the session started it, and (0.36.0) whether the person's message asked.
  */
 export async function turnRecord(
   io: Pick<Io, 'env' | 'home'>,
   turn: string,
   app: AppId = 'codex',
-): Promise<{ cards: string[]; nudged: boolean; delegated: boolean } | null> {
+): Promise<{ cards: string[]; nudged: boolean; delegated: boolean; asked: boolean } | null> {
   const record = (await load(io, app)).turns[turn]
   return record
     ? {
         cards: Array.isArray(record.cards) ? record.cards : [],
         nudged: record.nudged === true,
         delegated: record.delegated === true,
+        asked: record.asked === true,
       }
     : null
 }

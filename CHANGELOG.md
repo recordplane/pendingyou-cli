@@ -1,6 +1,26 @@
 # Changelog
 
-## 0.35.1 (2026-10-11)
+## 0.36.0 (2026-10-19)
+
+- Your agents' answers to your questions land in Pending You too (guide 2.54). When you ask an agent something and
+  its last message answers it (30 words or more outside code, or a table) but it posted nothing to Pending You that
+  turn, the check at the end of its turn asks it once: “Your person asked you something and your answer is only in
+  chat: post_answer it too, or say it doesn’t need one.” Your question is read from your own message that started the
+  turn, leniently, since dictation often has no “?”: “pending you how many calls did billing get last week” counts.
+  A request for work doesn't (“Can you fix the flaky test?”, “Deploy it to staging”, “When you're done, push it”),
+  nor anything under four words without a “?”, nor a turn Pending You started. Pattern matching only, on your
+  computer, as before. Claude Code reads your message from its transcript; Codex's next-message hook notes whether it
+  asked (never your words), OpenCode's plugin reads the turn's first message, and Pi's extension hands over the
+  prompt that started the run.
+- Your next message marks the answers that session posted as read in Pending You, so they leave your Pending without
+  notifying you: you've seen them in the chat. Only that session's own, posted before your message, and only when it
+  posted one in the last day. It goes beside the hand-off's request, inside its 2 seconds, prints nothing, and
+  changes nothing if it fails.
+- Codex: `init` gives the hook for Pending You's tools post_answer, which changes it, so trust it again in Codex's
+  `/hooks` (init and status say how). Until then the check for an answer left in chat stays off there.
+- `post_answer` counts as a card call: the end-of-turn checks see it, and Codex's hook, OpenCode's plugin and Pi's
+  extension remember the answer for the session, so a Reply on it wakes the session there as an answer does. In
+  Claude Code a Reply comes with your next message, or at the next session start.
 
 - Fixed: the Pending You popup in Herdr no longer breaks on a kind of card it doesn't know yet (or a grouped card with
   a question of such a kind). It shows the card and says "Answer this one in Pending You: o opens it."; reply, Later,
