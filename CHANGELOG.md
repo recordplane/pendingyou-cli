@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.36.1 (2026-10-20)
+
+- Fixed: when you replied on an answer card, the Claude Code session that posted the answer wasn't woken: the wake mod
+  didn't know `post_answer`, so your reply reached it only with your next message, or at the next session start. Now
+  the mod follows a session's answers as it does its questions, and your reply starts a turn even while the session
+  sits idle. Got it, reading the answer in the chat, a newer answer replacing it, or the agent withdrawing it wakes
+  nothing, and the mod forgets the answer (after one more look when you mark it Got it, since you can take that back
+  for a few seconds).
+- An answer asks you nothing, so it's no longer counted as waiting on you: not in “2 waiting on you” under Claude
+  Code's prompt, and not on Herdr's badges for Claude Code, Codex, OpenCode or Pi.
+- A reply on an answer wakes Codex, OpenCode and Pi in the same words as Claude Code: “Pending You: your person replied
+  to your answer “…” (req_…).”, then to read it with get_request, act on it and ack_answer, or post_answer with
+  follows for a long one.
+
 ## 0.36.0 (2026-10-19)
 
 - Your agents' answers to your questions land in Pending You too (guide 2.54). When you ask an agent something and

@@ -534,7 +534,8 @@ async function answerHold($, e) {
     if ((await check($, requestId)) !== 'ok')
         return null;
     showCards($);
-    return { result: { stdout: holdReply(requestId), stderr: '', interrupted: false } };
+    const answer = live.book.cards[requestId]?.kind === 'answer';
+    return { result: { stdout: holdReply(requestId, answer), stderr: '', interrupted: false } };
 }
 export function register(on) {
     on('session.start', async ($, e, next) => {
@@ -564,7 +565,7 @@ export function register(on) {
         return next(e);
     });
     on('tool.call', {
-        tool: /^mcp__.+__(post_request|get_request|update_request|reply_in_thread|ack_answer|cancel_request|whoami|list_pending|answer_delegated|hand_back)$/,
+        tool: /^mcp__.+__(post_request|post_answer|get_request|update_request|reply_in_thread|ack_answer|cancel_request|whoami|list_pending|answer_delegated|hand_back)$/,
     }, async ($, e, next) => {
         const result = await next(e);
         try {

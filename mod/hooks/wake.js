@@ -21,6 +21,7 @@ const URGENCIES = new Set(['now', 'today', 'whenever']);
 const isUrgency = (value) => typeof value === 'string' && URGENCIES.has(value);
 const READS = new Set([
     'post_request',
+    'post_answer',
     'get_request',
     'update_request',
     'reply_in_thread',
@@ -32,6 +33,7 @@ const READS = new Set([
     'hand_back',
 ]);
 export const HANDED_READS = new Set(['get_request', 'answer_delegated', 'hand_back']);
+const POSTS = new Set(['post_request', 'post_answer']);
 export const APPROVED_DRAFT_NOTICE = 'The approved words are in get_request’s answer.approvedDrafts: send them exactly.';
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const parseJson = (text) => {
@@ -99,7 +101,7 @@ export function resultObject(result) {
 }
 export function nameOf(tool, input) {
     const name = text(input.name, 120);
-    if (name || tool !== 'post_request')
+    if (name || !POSTS.has(tool))
         return name;
     const session = typeof input.session === 'string' ? parseJson(input.session) : input.session;
     return isObject(session) ? text(session.label, 120) : undefined;
@@ -111,6 +113,7 @@ export function argumentsOf(call) {
 export const isClosed = (status) => CLOSED.has(status);
 export const isReady = (state) => state.turn === 'agent' || isClosed(state.status);
 export const isWaitingOnYou = (state) => state.turn === 'you' && OPEN.has(state.status);
+const waitsOnYou = (card) => card.kind !== 'answer' && card.state !== undefined && isWaitingOnYou(card.state);
 export const momentOf = (state) => `${state.status}/${state.turn}/${state.version}/${state.cursor}`;
 export function stateOf(output) {
     const status = text(output.status, 40);
@@ -157,6 +160,7 @@ export function readBook(value) {
             ...(isUrgency(card.urgency) ? { urgency: card.urgency } : {}),
             ...(card.blocking === true ? { blocking: true } : {}),
             ...(card.askedFirst === true ? { askedFirst: true } : {}),
+            ...(card.kind === 'answer' ? { kind: 'answer' } : {}),
             ...(state ? { state } : {}),
             ...(typeof card.told === 'string' ? { told: card.told } : {}),
             ...(typeof card.seen === 'string' ? { seen: card.seen } : {}),
@@ -220,12 +224,14 @@ function tracked(book, facts, now) {
     const card = book.cards[facts.requestId];
     const name = facts.name ?? card?.name;
     const title = facts.title ?? card?.title;
+    const kind = facts.kind ?? card?.kind;
     return put(book, {
         requestId: facts.requestId,
         server: facts.server,
         ...(name ? { name } : {}),
         ...(title ? { title } : {}),
         ...(facts.pressing ?? pressingOfCard(card)),
+        ...(kind ? { kind } : {}),
         learnedAt: card?.learnedAt ?? now,
         changedAt: now,
         state: facts.state,
@@ -269,6 +275,22 @@ export function learn(book, call, now) {
             }, now);
             return tool === 'post_request' ? followedUp(posted, requestIdOf(input.follows), now) : posted;
         }
+        case 'post_answer': {
+            const status = text(output.status, 40);
+            if (!status || !OPEN.has(status) || version === undefined)
+                return next;
+            const title = text(input.title, 400);
+            const posted = tracked(next, {
+                requestId,
+                server,
+                ...(name ? { name } : {}),
+                ...(title ? { title: clip(title) } : {}),
+                pressing: {},
+                kind: 'answer',
+                state: { status, turn: 'you', version, cursor: card?.state?.cursor ?? '' },
+            }, now);
+            return followedUp(posted, requestIdOf(input.follows), now);
+        }
         case 'reply_in_thread': {
             const reopen = isObject(input.reopen) ? input.reopen : null;
             if (version === undefined || (!reopen && output.turn !== 'you'))
@@ -304,7 +326,9 @@ export function learn(book, call, now) {
         case 'ack_answer':
             return output.status === 'resolved' ? drop(next, requestId) : next;
         case 'cancel_request':
-            return output.status === 'cancelled' ? drop(next, requestId) : next;
+            return output.status === 'cancelled' || output.status === 'resolved'
+                ? drop(next, requestId)
+                : next;
         default:
             return next;
     }
@@ -332,14 +356,21 @@ export function failed(card, now, blocked) {
         nextAt: now + Math.min(MAX_BACKOFF_MS, FAST_MS * 2 ** (failures - 1)),
     };
 }
+export const ANSWER_UNDO_MS = 20_000;
+const mayComeBack = (card) => card.kind === 'answer' &&
+    card.state?.status === 'resolved' &&
+    !(card.checkedAt !== undefined && card.checkedAt - card.changedAt >= ANSWER_UNDO_MS);
 export function dueCards(book, now) {
     return Object.values(book.cards)
-        .filter((card) => !(card.state && isClosed(card.state.status)) && (card.nextAt ?? 0) <= now)
+        .filter((card) => !(card.state && isClosed(card.state.status) && !mayComeBack(card)) &&
+        (card.nextAt ?? 0) <= now)
         .sort((a, b) => (a.nextAt ?? 0) - (b.nextAt ?? 0));
 }
 export function needsTelling(card) {
     const state = card.state;
     if (!state || !isReady(state))
+        return false;
+    if (card.kind === 'answer' && isClosed(state.status))
         return false;
     if (state.status === 'resolved')
         return false;
@@ -377,7 +408,7 @@ export function untold(book, before) {
 export function settle(book, now) {
     let next = book;
     for (const card of Object.values(book.cards)) {
-        const done = card.state && isClosed(card.state.status) && !needsTelling(card);
+        const done = card.state && isClosed(card.state.status) && !needsTelling(card) && !mayComeBack(card);
         if (done || now - Math.max(card.learnedAt, card.changedAt) > KEEP_MS)
             next = drop(next, card.requestId);
     }
@@ -389,6 +420,11 @@ const named = (card) => (card.name ? `name “${card.name}”` : 'your name');
 function line(card) {
     const state = card.state;
     const get = `get_request (requestId ${card.requestId}, ${named(card)})`;
+    if (card.kind === 'answer')
+        return [
+            `your person replied to your answer ${titled(card)}`,
+            `call ${get}, act on their words, then ack_answer with its version and a one-line outcome (it reaches them as your reply), or post_answer with follows: its requestId for a long one`,
+        ];
     switch (state.status) {
         case 'expired':
             return [
@@ -449,7 +485,7 @@ export function wakeText(cards) {
 export function statusText(book, blocked) {
     if (blocked)
         return `to hear answers here, allow mcp__${blocked} in /permissions`;
-    const waiting = Object.values(book.cards).filter((card) => card.state && isWaitingOnYou(card.state)).length;
+    const waiting = Object.values(book.cards).filter(waitsOnYou).length;
     return waiting ? `${waiting} waiting on you` : undefined;
 }
 export const blockedNote = (server) => `Pending You can’t wake this session when your person answers: Claude Code doesn’t let it check your cards yet. Ask them to allow mcp__${server} in /permissions (Allow, user settings). Until then, check get_request at breakpoints.`;
@@ -572,7 +608,7 @@ export function holdOf(command) {
     }
     return held ? requestId : null;
 }
-export const holdReply = (requestId) => `Pending You: no hold is needed in this session. It’s woken when your person answers ${requestId}, writes to you on it, or its fallback runs, even while it’s idle. Nothing is running in the background and there’s nothing to wait on: keep working, or end your turn.`;
+export const holdReply = (requestId, answer = false) => `Pending You: no hold is needed in this session. It’s woken when your person ${answer ? `replies to your answer ${requestId}` : `answers ${requestId}, writes to you on it, or its fallback runs`}, even while it’s idle. Nothing is running in the background and there’s nothing to wait on: keep working, or end your turn.`;
 function leaseOf(value) {
     const match = /^(\S+) (\d+)$/.exec(value ?? '');
     return match ? { holder: match[1], until: Number(match[2]) } : null;
@@ -677,7 +713,7 @@ export function graceEnds(handed, folders) {
     return Number.isFinite(at) ? at + HANDED_GRACE_MS : null;
 }
 export function folderOf(tool, input) {
-    if (tool !== 'post_request')
+    if (!POSTS.has(tool))
         return undefined;
     const session = typeof input.session === 'string' ? parseJson(input.session) : input.session;
     return isObject(session) ? text(session.cwd, 1000) : undefined;
@@ -919,7 +955,7 @@ export function inHerdr(on, bin, pane) {
 }
 export function herdrCards(book) {
     return Object.values(book.cards)
-        .filter((card) => card.state && isWaitingOnYou(card.state))
+        .filter(waitsOnYou)
         .sort((a, b) => (a.requestId < b.requestId ? -1 : a.requestId > b.requestId ? 1 : 0))
         .map((card) => ({
         requestId: card.requestId,

@@ -34,6 +34,10 @@
 // cards is (urgency, blocking, asked in the conversation too): a pane's badges are the cards its sessions wait on
 // (reportThreads, herdr.ts), written again by `posted`, the listener, Codex's keeper and OpenCode's and Pi's presence.
 //
+// Since 0.36.1 a thread remembers which of its cards are its answers (post_answer, guide 2.54): the listener says a
+// Reply on one as the Claude Code wake mod does ("your person replied to your answer …"), and Herdr's badges leave
+// answers out, since an answer asks the person nothing.
+//
 // Ids, names, folders, titles and pane ids only, in ~/.config/pendingyou/<app>-threads.json: never an answer or a note.
 
 import { randomBytes } from 'node:crypto'
@@ -94,6 +98,11 @@ interface ThreadCard {
   urgency?: Urgency
   blocking?: boolean
   askedFirst?: boolean
+  /**
+   * An answer of the agent's own (post_answer, 0.36.1): a Reply on it wakes the thread, but it asks the person nothing,
+   * so Herdr's badges leave it out of what waits on them.
+   */
+  kind?: 'answer'
 }
 
 /** One Codex thread (or OpenCode or Pi session) the hooks know. */
@@ -360,6 +369,7 @@ export async function posted(io: Io, options: { origin: string; app: AppId }): P
           const urgency = isUrgency(args.urgency) ? args.urgency : before?.urgency
           const blocking = typeof args.blocking === 'boolean' ? args.blocking : before?.blocking
           const askedFirst = call === 'post_request' ? askedIn(args) : before?.askedFirst
+          const answer = call === 'post_answer' || before?.kind === 'answer'
           waiting.cards[requestId] = {
             ...(name ? { name } : {}),
             ...(title ? { title } : {}),
@@ -367,6 +377,7 @@ export async function posted(io: Io, options: { origin: string; app: AppId }): P
             ...(urgency ? { urgency } : {}),
             ...(blocking ? { blocking } : {}),
             ...(askedFirst ? { askedFirst } : {}),
+            ...(answer ? { kind: 'answer' as const } : {}),
           }
         }
       }
@@ -433,15 +444,18 @@ export async function reportThreads(
     const here = Object.values(state.threads).filter((thread) => thread.herdr === pane.pane)
     if (here.length === 0 && options.closed) return await clearHerdr(io, options.at, pane)
     const newest = [...here].sort((a, b) => b.at - a.at)[0]
+    // What waits on the person: never an answer of the agent's own (0.36.1), which asks them nothing.
     const cards: WaitingCard[] = here.flatMap((thread) =>
-      Object.entries(thread.cards).map(([requestId, card]) => ({
-        requestId,
-        ...(typeof card.title === 'string' ? { title: card.title } : {}),
-        ...(isUrgency(card.urgency) ? { urgency: card.urgency } : {}),
-        ...(card.blocking === true ? { blocking: true } : {}),
-        ...(card.askedFirst === true ? { askedFirst: true } : {}),
-        at: typeof card.at === 'number' ? card.at : 0,
-      })),
+      Object.entries(thread.cards)
+        .filter(([, card]) => card.kind !== 'answer')
+        .map(([requestId, card]) => ({
+          requestId,
+          ...(typeof card.title === 'string' ? { title: card.title } : {}),
+          ...(isUrgency(card.urgency) ? { urgency: card.urgency } : {}),
+          ...(card.blocking === true ? { blocking: true } : {}),
+          ...(card.askedFirst === true ? { askedFirst: true } : {}),
+          at: typeof card.at === 'number' ? card.at : 0,
+        })),
     )
     return await writeHerdr(
       io,
@@ -711,6 +725,15 @@ function line(heard: Heard, card: ThreadCard): [string, string] | null {
       `${from} followed up on ${titled}, which it answered for your person`,
       `call ${get} to read it, act on it if it needs anything, then ack_answer with its version to mark it heard`,
     ]
+  // An answer of its own (post_answer, 0.36.1): only a Reply on it wakes the thread, their words the answer to it. Got
+  // it and read in the conversation (resolved), replaced or withdrawn (cancelled) say nothing, as in the wake mod.
+  if (heard.kind === 'answer')
+    return heard.status === 'resolved' || heard.status === 'cancelled' || heard.status === 'expired'
+      ? null
+      : [
+          `your person replied to your answer ${titled}`,
+          `call ${get}, act on their words, then ack_answer with its version and a one-line outcome (it reaches them as your reply), or post_answer with follows: its requestId for a long one`,
+        ]
   switch (heard.status) {
     case 'expired':
       return [
