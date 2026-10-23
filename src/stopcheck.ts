@@ -46,6 +46,13 @@
 // card posted, and before the one for items left in chat. The person's message: Claude Code's transcript; whether it
 // asked, as Codex's next-message hook records it (never the words), and only once Codex's PostToolUse hook sees
 // post_answer (codex.ts's codexSeesAnswers); the first message of OpenCode's turn; the prompt that started Pi's run.
+//
+// Since 0.37.0 (guide 2.55) a step the final message hands the person to do now ("Go: approve it now", "you can merge
+// it now", "now open the run link") goes on a card, whatever card is open: an agent that ended a card at "on my go"
+// and then said the go only here left the person to find it in the chat. Unless a card call from the same turn
+// carries it (its words hold the step's link, or two of its words), the agent is asked once to put it on a card, or to
+// say it doesn't need one (STEP_NOW_REASON, step-now.ts). After the ask to type here and before the card-posted check,
+// so neither a card about something else nor a recap ends the turn; with no request.
 import { open } from 'node:fs/promises'
 import { getJson } from './api.ts'
 import { codexSeesAnswers } from './apps/codex.ts'
@@ -64,6 +71,7 @@ import {
   subagentsRunning,
 } from './permission.ts'
 import { askerParams, folderForms } from './pickup.ts'
+import { carriesStep, STEP_NOW_REASON, stepsNow } from './step-now.ts'
 
 /** The most of the transcript it reads, from the end. A turn longer than this is let through. */
 export const READ_CAP = 4 * 1024 * 1024
@@ -724,6 +732,12 @@ export async function stopcheck(io: Io, options: { origin: string; app?: AppId }
         return 0
       return block(confirmReason(ask.words, sessionLink(io.env), APP_NAMES[app]))
     }
+    // A step handed over now (0.37.0, guide 2.55): on a card from this turn, whatever card is open. Its saying it's on
+    // a card doesn't excuse it: that's the card whose step waited for the go.
+    const loose = stepsNow(text).filter(
+      (step) => !turn.cards.some((card) => carriesStep(card, step)),
+    )
+    if (loose.length && !saysNoCard(text)) return block(STEP_NOW_REASON)
     if (turn.posted || saysPosted(text) || saysNoCard(text)) return 0
     // Their own question, answered only in chat (0.36.0, guide 2.54): the answer goes on a card too.
     if (turn.asked && isAnswer(text) && (await seesAnswers(io, app))) return block(ANSWER_REASON)

@@ -214,6 +214,19 @@ beside a recap still goes on a card. And anything else for you, in a message tha
 recap while this folder has a card waiting on you: only such a message costs a request (this folder's open cards,
 given up after 1.5 seconds), and when Pending You can't say, the turn ends.
 
+Since 0.37.0 a step it hands you to do now goes on a card, whatever card is open (guide 2.55). An agent that ends a
+card at a step that waits for it ("on my go, open the link") and then gives the go only in its chat leaves you to find
+it there. So when the last message hands you a step now ("Go: approve it now", "you can merge it now", "now open the
+run link", "go ahead and approve it", "Your turn: …"), a card call from that turn has to carry it: one that holds the
+message's link, or, without one, two of its words. Otherwise the agent is asked once (about 49 tokens): *Your last
+message hands them a step now, and no card from this turn has it: put it on a card (follows: the card they answered;
+one still waiting: update_request it), or say it doesn’t need one.* A card about something else, a recap of open cards
+and the message's word that it's on a card don't count: the card waiting on you is the one whose step said "on my go".
+Not a step now: the agent's own act ("I'll go ahead and merge it now"), a question whether it should ("Merge and deploy
+now?"), an offer ("whenever you like"), a look ("now open … to see it"), news ("you can now run the tests yourself"),
+what a page or a step says, a heading or label ("Open now:", "Open questions: …"), or anything in code or quotes. It
+costs no request.
+
 Since 0.9.0 it also catches a message asking you to type or reply something in Claude Code's own chat ("Reply “yes,
 erase disk12” here", "To confirm, type `yes`", "Confirm here"). Some steps an agent takes only on your own words in
 its conversation, never on a card answer; that's fine, but then a card has to send you there. Unless a card posted in

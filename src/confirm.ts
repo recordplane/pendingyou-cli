@@ -59,7 +59,7 @@ const THIS_CHAT = /\bin\s+(?:this|our)\s+(?:chat|conversation|session)\b/iu
 const OFFER =
   /\b(?:any\s?time|whenever|at\s+any\s+(?:point|time)|if\s+you\s+change\s+your\s+mind|if\s+(?:anything|something)\s+(?:looks|seems|goes))\b/iu
 /** What something says rather than an ask: "The email ends with: Reply “STOP” here". */
-const DESCRIBED =
+export const DESCRIBED =
   /\b(?:says?|said|reads?|ends?\s+with|starts?\s+with|shows?|prints?|displays?|asks?|prompts?|tells?\s+\w+|text|message|copy|label|button|template)\s*[:,]?$/iu
 /** A command or a slash command: a step to run (the general check's business), not words to type to the agent. */
 const COMMAND_LIKE =
@@ -103,7 +103,7 @@ export interface TypeHere {
 }
 
 /** Each quoted span replaced by ⟦n⟧, with what it held. */
-function marked(text: string): { text: string; quotes: string[] } {
+export function marked(text: string): { text: string; quotes: string[] } {
   const quotes: string[] = []
   const out = text.replace(QUOTED, (...groups: unknown[]) => {
     const inner = groups.slice(1, 6).find((group) => typeof group === 'string') as string
@@ -200,7 +200,8 @@ const COMMON = new Set([
   'that',
 ])
 
-const wordsOf = (text: string) => text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
+/** A text's words, lower case: its runs of letters and digits ("yes, erase disk12" → yes, erase, disk12). */
+export const wordsOf = (text: string) => text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
 
 /** The words that say what's being confirmed: "yes, erase disk12" → erase, disk12. */
 export const telling = (words: string | null) =>

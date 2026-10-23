@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.37.0 (2026-10-22)
+
+- A step your agent hands you now goes on a card (guide 2.55). When its last message gives you a step to do now (“Go:
+  approve it now”, “you can merge it now”, “now open the run link”, “go ahead and approve it”) and no card from that
+  turn has it, the check at the end of its turn asks it once to put it on a card, even while an older card of its waits
+  on you. A card from the turn has it when it holds the message’s link, or, without one, two of its words. Not a step
+  now: the agent's own act (“I'll go ahead and merge it now”), a question whether it should, an offer (“whenever you
+  like”), a look (“now open … to see it”), what a page or a step says, or a heading such as “Open now:”. Patterns
+  only, on your computer; it asks Pending You nothing. Run `npx pendingyou@latest init` to switch: the hooks don’t
+  change, so Codex keeps trusting them.
+
 ## 0.36.1 (2026-10-20)
 
 - Fixed: when you replied on an answer card, the Claude Code session that posted the answer wasn't woken: the wake mod
