@@ -777,6 +777,10 @@ export type Assistant = {
         paneId: string
         server?: string
       }
+      show?: {
+        app: "herdr" | (string & {})
+        where: string
+      }
     }[]
   }[]
 }

@@ -858,7 +858,7 @@ function machineCommand(
   }
 }
 
-/** The scopes an app may ask for (the person API's catalogue). */
+/** The scopes an app may ask for (the person API's catalogue: app-login.ts's APP_SCOPES, which a test holds to it). */
 const APP_SCOPE_NAMES = [
   'cards:read',
   'cards:read:all',
@@ -867,6 +867,7 @@ const APP_SCOPE_NAMES = [
   'cards:later',
   'cards:delegate',
   'assistants:read',
+  'assistants:show',
   'presence:desk',
 ]
 

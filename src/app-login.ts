@@ -40,7 +40,10 @@ import {
 import { fileStore } from './sdk/node.ts'
 import { memoryStore, type Store } from './sdk/store.ts'
 
-/** The person API's scopes, in its catalogue's order (packages/domain's V1_SCOPES). */
+/**
+ * The person API's scopes, in its catalogue's order (packages/domain's V1_SCOPES; a test holds them the same). Since
+ * 0.38.0 that's `assistants:show` too: Show in Herdr (herdr/show.ts).
+ */
 export const APP_SCOPES = [
   'cards:read',
   'cards:read:all',
@@ -49,12 +52,14 @@ export const APP_SCOPES = [
   'cards:later',
   'cards:delegate',
   'assistants:read',
+  'assistants:show',
   'presence:desk',
 ] as const
 
 /** Pending You's own apps that sign in here, by slug: their name, and what they ask for. */
 export const FIRST_PARTY_APPS: Record<string, { name: string; scopes: readonly string[] }> = {
-  // Everything: `cards:read:all` only puts the tick on the card, off unless the person ticks it.
+  // Everything: `cards:read:all` only puts the tick on the card, off unless the person ticks it. A sign-in from before
+  // 0.38.0 lacks `assistants:show`: the plugin's setup and doctor say to sign in again for Show in Herdr.
   herdr: { name: 'Herdr', scopes: APP_SCOPES },
 }
 
@@ -114,6 +119,7 @@ const MAY: Record<string, string> = {
   'cards:later': 'put them in Later',
   'cards:delegate': 'hand them to another assistant',
   'assistants:read': 'see your assistants',
+  'assistants:show': 'bring the assistant that asked to the front when you press Show',
   'presence:desk': 'keep your phone quiet while you use it',
 }
 

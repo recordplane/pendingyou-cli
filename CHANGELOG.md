@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.38.0 (2026-10-25)
+
+- Show in Herdr: press it on a card in Pending You, at your desk or on your phone, and Herdr moves to the pane of the
+  agent that asked, on every client attached to it. The Pending You plugin for Herdr's watcher listens for your
+  presses once Herdr's sign-in allows it (`assistants:show`), one wait at a time beside what it already does, and
+  checks each before anything moves: the pane must be on its own Herdr server, be there now, and be the agent's (its
+  badge lists the card, or it runs that kind of agent: `claude` for Claude Code). Otherwise Pending You hears "not
+  found" and nothing moves. It only ever brings a pane to the front: it never types into one, runs or opens anything,
+  and logs nothing. What it hears is ids and the agent's name, never a card's words.
+- `npx pendingyou app login herdr` asks for `assistants:show` too, and `app status` lists it: "bring the assistant
+  that asked to the front when you press Show". A sign-in from before doesn't hold it: the plugin's setup and doctor
+  say "Sign Herdr in again to use Show in Herdr: npx pendingyou app login herdr", and setup offers to.
+- Setup starts this version's watcher in place of one from an older pendingyou, which doesn't listen for Show in
+  Herdr; doctor says when the one running is older. The watcher's lease now says which pendingyou it is.
+- Fixed: Herdr's toast "Pending You · Herdr is signed out" could show twice when the sign-in ended just after its
+  tokens were renewed. The watcher now tells sign-ins apart by their key, which renewing doesn't change.
+
 ## 0.37.0 (2026-10-22)
 
 - A step your agent hands you now goes on a card (guide 2.55). When its last message gives you a step to do now (“Go:

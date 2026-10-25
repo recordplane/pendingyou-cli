@@ -412,6 +412,17 @@ as it does while Pending You is open on your desk.
 last use here; it warns in the last 3), and `npx pendingyou app logout herdr` ends Herdr's sign-in. Settings › Apps and devices in Pending You
 lists it too, with Remove. It needs `init` to have run here first: this computer's key vouches for the sign-in.
 
+### Show in Herdr (0.38.0)
+
+Press Show in Herdr on a card in Pending You, at your desk or on your phone, and Herdr moves to the pane of the agent
+that asked, on every client attached to it. The plugin's watcher listens for your presses once Herdr's sign-in allows it
+(`assistants:show`: `npx pendingyou app login herdr` asks for it; a sign-in from before 0.38.0 doesn't hold it, and the
+plugin's setup and doctor say to sign in again). It checks each press before anything moves: the pane must be on its own
+Herdr server, be there now, and be the agent's (its badge lists the card, or it runs that kind of agent, `claude` for
+Claude Code). Otherwise Pending You hears "not found", and nothing moves. It only ever brings a pane to the front: it
+never types into one, runs or opens anything, and logs nothing. Setup starts this version's watcher in place of one
+from an older pendingyou, which doesn't listen.
+
 ## How Claude Code hears your answer
 
 **Claude Code 2.1.287 or later: the wake mod.** There's nothing to run. In each session the mod learns the cards
@@ -593,7 +604,9 @@ a command that acts for one agent acts for Claude Code. Options can come before 
 hands over a card, and no agent's sign-in can. An app you sign in with `pendingyou app login` (the Pending You plugin
 for Herdr) answers only from its own sign-in and its own key, kept apart in `apps/<app>.json`, which nothing an agent
 runs here reads, and only when you press a key in it; never a high-stakes card, and Pending You labels every answer
-with the app and the computer.
+with the app and the computer. Signed in with `assistants:show` (0.38.0), Herdr's watcher also keeps one wait open with
+Pending You for your presses of Show in Herdr, which name a card, an agent and its pane, never a card's words, and it
+only ever brings that pane to the front.
 
 Each agent's sign-in is that agent's own connection on Pending You, signed in from this computer: it can post cards,
 change or cancel its own, read the answers to them and reply in their threads, and it can't answer anything for you.

@@ -10,16 +10,27 @@
 // says once in a toast when the sign-in has ended (removed in Settings, replaced by a new sign-in, or run out), and
 // once a day in its last 3 days that it's about to. Its toasts still come from the badges alone: the change feed is
 // followed by the popup while it's open, not here, so nothing is said twice and the feed's waits stay the popup's.
+//
+// Show in Herdr (0.38.0, herdr/show.ts): once the sign-in holds `assistants:show`, it also follows the person's presses
+// of Show on a card for this Herdr server's panes (GET /v1/shows, one wait at a time, beside the rest), and brings the
+// agent's pane to the front when it's still the agent's. It follows them while the sign-in may, and stops when the
+// watcher does. Nothing it hears is ever thrown: a refusal waits SHOWS_AGAIN_MS before it asks again, a sign-in that
+// ended is said once as above, and the network's failures are waited out as the SDK does. Its lease says which
+// pendingyou it is, so setup can tell one from before Show in Herdr and start this one's instead.
 import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { appClient, RENEW_WITHIN_MS, readAppSignIn } from '../app-login.ts'
+import { herdrServer } from '../herdr.ts'
 import type { Io } from '../io.ts'
-import { type Client, SignedOutError } from '../sdk/index.ts'
+import { atLeast } from '../mod.ts'
+import { type Client, type Credentials, SignedOutError } from '../sdk/index.ts'
+import { VERSION } from '../version.ts'
 import { due, emptyNotices, look, type Notices, type Toast } from './notice.ts'
 import { readWaiting, type Waiting } from './panes.ts'
 import { agentView, type PluginPlace, pluginOff, viewOn } from './plugin.ts'
 import { awayDesk, type DeskState, deskStep, lastActive } from './presence.ts'
+import { followHerdrShows } from './show.ts'
 import { HerdrError, herdrRequest, herdrSubscribe } from './socket.ts'
 
 /** A lease untouched this long belongs to a watcher that died. */
@@ -50,7 +61,7 @@ export async function watching(place: PluginPlace): Promise<boolean> {
   )
 }
 
-/** Takes the lease for this watcher: its id, or null when a live one holds it. */
+/** Takes the lease for this watcher: its id, or null when a live one holds it. It says which pendingyou this is. */
 async function takeLease(place: PluginPlace): Promise<string | null> {
   const path = leasePath(place)
   await mkdir(place.stateDir, { recursive: true, mode: 0o700 })
@@ -58,26 +69,46 @@ async function takeLease(place: PluginPlace): Promise<string | null> {
   const id = randomBytes(8).toString('hex')
   await rm(path, { force: true })
   try {
-    await writeFile(path, JSON.stringify({ id, pid: process.pid }), { flag: 'wx', mode: 0o600 })
+    await writeFile(path, JSON.stringify({ id, pid: process.pid, version: VERSION }), {
+      flag: 'wx',
+      mode: 0o600,
+    })
     return id
   } catch {
     return null
   }
 }
 
-/** The lease's holder as its file says: its id and process; null when there's none. */
-async function holder(place: PluginPlace): Promise<{ id: string; pid: number } | null> {
+/** The lease's holder as its file says: its id, its process and its pendingyou (null before 0.38.0); null when none. */
+async function holder(
+  place: PluginPlace,
+): Promise<{ id: string; pid: number; version: string | null } | null> {
   try {
     const held = JSON.parse(await readFile(leasePath(place), 'utf8')) as {
       id?: unknown
       pid?: unknown
+      version?: unknown
     }
     return typeof held.id === 'string' && typeof held.pid === 'number'
-      ? { id: held.id, pid: held.pid }
+      ? {
+          id: held.id,
+          pid: held.pid,
+          version: typeof held.version === 'string' ? held.version : null,
+        }
       : null
   } catch {
     return null
   }
+}
+
+/**
+ * Whether the watcher running now is from an older pendingyou than this one: one from before 0.38.0 (its lease says no
+ * version) doesn't follow Show in Herdr's presses. Setup stops it and starts this one's.
+ */
+export async function olderWatcher(place: PluginPlace): Promise<boolean> {
+  if (!(await watching(place))) return false
+  const held = await holder(place)
+  return held !== null && (held.version === null || !atLeast(held.version, VERSION))
 }
 
 /** Renews the lease while it's this watcher's; false once it's gone (`unconfigure`) or another holds it. */
@@ -180,6 +211,12 @@ const FOCUS_EVENTS = new Set([
 /** How often the watcher asks Pending You when Herdr's sign-in ends. */
 const EXPIRY_CHECK_MS = 6 * 60 * 60_000
 
+/** How long the watcher waits to follow Show in Herdr's presses again after Pending You refused to let it. */
+export const SHOWS_AGAIN_MS = 10 * 60_000
+
+/** A sign-in, as the watcher tells them apart: by its key, which each new sign-in makes and keeps as its tokens renew. */
+const signInOf = (stored: Credentials) => `${stored.key.x}.${stored.key.y}`
+
 /** What a toast about Herdr's own sign-in says. */
 export const SIGNED_OUT_TOAST: Toast = {
   title: 'Pending You · Herdr is signed out',
@@ -191,44 +228,91 @@ export const endingToast = (days: number): Toast => ({
 })
 
 /**
- * Herdr's sign-in, as the watcher keeps it: your presence while you're active in Herdr, and a toast when the sign-in
- * has ended or is about to. Quiet when Herdr isn't signed in; never throws.
+ * Herdr's sign-in, as the watcher keeps it: your presence while you're active in Herdr, a toast when the sign-in has
+ * ended or is about to, and Show in Herdr's presses followed while it may. Quiet when Herdr isn't signed in; never
+ * throws.
  */
 export function signInKeeper(io: Io, socket: string, place: PluginPlace) {
   let client: Client | null = null
-  let token: string | null = null
+  /** The sign-in the client is for (signInOf): a client renews its own tokens, so only a new sign-in needs a new one. */
+  let current: string | null = null
   let presence = false
+  /** Whether the sign-in may bring the agent that asked to the front here (assistants:show). */
+  let shows = false
   let desk: DeskState = awayDesk()
   let checkedAt = Number.NEGATIVE_INFINITY
   /** The sign-in that was said to have ended, so it's said once. */
-  let endedToken: string | null = null
+  let endedSignIn: string | null = null
   let warnedAt = Number.NEGATIVE_INFINITY
   let focusAt: number | null = null
-  const ended = async () => {
-    if (token && endedToken !== token) {
-      endedToken = token
+  /** This Herdr server as the agents' presence names it: without it no show can be told to be this one's. */
+  const server = herdrServer(io.env, io.host)
+  /** Show in Herdr's presses while they're followed: for which sign-in, and what stops it. */
+  let following: { signIn: string; stop: AbortController } | null = null
+  /** When Pending You last refused to let a sign-in follow them: it isn't asked again for SHOWS_AGAIN_MS. */
+  let refused: { signIn: string; at: number } | null = null
+
+  const stopShows = () => {
+    following?.stop.abort()
+    following = null
+  }
+  /** The sign-in `which` has ended: said once in a toast, and nothing more is asked with it. */
+  const ended = async (which: string | null = current) => {
+    if (which === null || which !== current) return
+    client = null
+    stopShows()
+    if (endedSignIn !== which) {
+      endedSignIn = which
       await showToast(socket, SIGNED_OUT_TOAST)
     }
-    client = null
+  }
+  /** Follows Show in Herdr's presses with the sign-in's client, unless it does already or mayn't now. */
+  const followShows = () => {
+    if (!client || !current || !shows || !server || following || io.signal.aborted) return
+    if (refused?.signIn === current && io.now() - refused.at < SHOWS_AGAIN_MS) return
+    const run = { signIn: current, stop: new AbortController() }
+    following = run
+    void followHerdrShows(client, { socket, server, signal: run.stop.signal })
+      .catch(async (error: unknown) => {
+        // Its sign-in ended (removed in Settings, replaced, run out): said once, as for presence. Any other refusal
+        // (no computer, no scope, a Pending You without shows): asked again later, not at every look.
+        if (error instanceof SignedOutError) await ended(run.signIn)
+        else refused = { signIn: run.signIn, at: io.now() }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (following === run) following = null
+      })
   }
   return {
     /** A Herdr event: moving between panes, tabs and workspaces is you in Herdr. */
     heard(event: string) {
       if (FOCUS_EVENTS.has(event)) focusAt = io.now()
     },
-    /** Looks at the sign-in again (a new one, or none any more). */
+    /** Looks at the sign-in again (a new one, or none any more), and follows Show in Herdr's presses while it may. */
     async renew() {
       const stored = await readAppSignIn(io, 'herdr').catch(() => null)
-      if (!stored || stored.refreshToken === endedToken) {
+      const signIn = stored ? signInOf(stored) : null
+      if (!stored || signIn === endedSignIn) {
         client = null
-        token = stored?.refreshToken ?? null
+        current = signIn
+        stopShows()
         return
       }
-      if (token !== stored.refreshToken || !client) {
-        token = stored.refreshToken
+      if (signIn !== current || !client) {
+        current = signIn
         client = appClient(io, 'herdr')
-        presence = stored.scopes.includes('presence:desk')
+        // A new sign-in: the presses are followed with its own client.
+        stopShows()
       }
+      presence = stored.scopes.includes('presence:desk')
+      shows = stored.scopes.includes('assistants:show')
+      if (shows) followShows()
+      else stopShows()
+    },
+    /** Stops following Show in Herdr's presses: the watcher is stopping. */
+    stop() {
+      stopShows()
     },
     /** One look: presence when it's due, and the sign-in's end when it's time to ask. */
     async tick() {
@@ -335,6 +419,8 @@ export async function watch(
   } catch {
     return 0
   } finally {
+    // Show in Herdr's wait is given up with the watcher.
+    signIn.stop()
     if ((await holder(place))?.id === lease)
       await rm(leasePath(place), { force: true }).catch(() => {})
   }

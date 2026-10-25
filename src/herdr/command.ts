@@ -14,7 +14,9 @@
 // Phase 0 was read-only. Since 0.21.0 (plugin 0.2) setup can sign Herdr in to Pending You (`pendingyou app login
 // herdr`, app-login.ts), and then the popup answers your cards with a key, through the SDK with Herdr's own sign-in and
 // key (herdr/queue.ts): only when you press one in it, never a high-stakes card. Without that sign-in nothing here
-// answers, changes or reads a card in Pending You.
+// answers, changes or reads a card in Pending You. Since 0.38.0 the sign-in also lets the watcher bring the agent that
+// asked to the front when you press Show in Herdr on its card (herdr/show.ts); setup and doctor say when a sign-in from
+// before needs making again for it, and setup starts this version's watcher in place of an older one.
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -40,10 +42,12 @@ import {
   TOKEN_NAMES,
   writeHerdr,
 } from '../herdr.ts'
+import { originArgs } from '../hooks.ts'
 import type { Io } from '../io.ts'
 import { sessionName } from '../permission.ts'
 import { presenceName } from '../presence.ts'
 import { headlessReason } from '../remote.ts'
+import type { Credentials } from '../sdk/index.ts'
 import { shimPath } from '../shim.ts'
 import { VERSION } from '../version.ts'
 import { badgedPanes, nextWaiting, readWaiting } from './panes.ts'
@@ -68,7 +72,7 @@ import {
 } from './plugin.ts'
 import { cardsPopup, originFor } from './popup.ts'
 import { HerdrError, herdrRequest } from './socket.ts'
-import { pluginEnabled, stopWatcher, watch, watching } from './watch.ts'
+import { olderWatcher, pluginEnabled, stopWatcher, watch, watching } from './watch.ts'
 
 /** Says something in Herdr itself (an action's output goes only to the plugin's log). Never throws. */
 async function toast(place: PluginPlace, title: string, body?: string): Promise<void> {
@@ -245,6 +249,20 @@ async function originHere(io: Io, fallback: string): Promise<string> {
 /** What a line of setup or doctor says: ✓ fine, ! needs you, · for your information. */
 const line = (mark: '✓' | '!' | '·', text: string) => `${mark} ${text}\n`
 
+/** Whether Herdr's sign-in may bring the agent that asked to the front (assistants:show: Show in Herdr, 0.38.0). */
+const showsHere = (stored: Credentials) => stored.scopes.includes('assistants:show')
+
+/** What setup and doctor say to a sign-in made before Show in Herdr. */
+const signInAgainForShow = (origin: string) =>
+  `Sign Herdr in again to use Show in Herdr: npx pendingyou app login herdr${originArgs(origin)}`
+
+/** Starts this version's watcher unless one runs; one from an older pendingyou (before Show in Herdr) gives way. */
+async function startWatcher(io: Io, place: PluginPlace): Promise<void> {
+  if (!place.socket) return
+  if (await olderWatcher(place)) await stopWatcher(place)
+  if (!(await watching(place))) io.background(['herdr', 'watch'])
+}
+
 /** `herdr setup`: toasts checked, the sidebar row offered (written only with a yes), the keys to add, the view. */
 async function setup(
   io: Io,
@@ -305,7 +323,7 @@ async function setup(
       io.out(line('✓', 'Agents waiting on you come first in the Agents panel.'))
     }
   }
-  if (place.socket && !(await watching(place))) io.background(['herdr', 'watch'])
+  await startWatcher(io, place)
   if (io.interactive && !options.yes) await io.ask('\nPress Enter to close. ')
   return 0
 }
@@ -321,6 +339,14 @@ async function signInStep(
     io.out(
       `${line('✓', `Herdr is signed in to Pending You at ${stored.origin}: its popup (prefix+y) answers your cards with a key.`)}  npx pendingyou app status herdr says what it may do and for how long.\n\n`,
     )
+    if (showsHere(stored)) return
+    // Signed in before Show in Herdr: again, at the same Pending You, for it.
+    io.out(line('!', signInAgainForShow(stored.origin)))
+    if (options.yes || !io.interactive || !(await ask('Sign Herdr in again now?'))) {
+      io.out('\n')
+      return
+    }
+    await signInHerdr(io, stored.origin)
     return
   }
   io.out(
@@ -333,7 +359,11 @@ async function signInStep(
     )
     return
   }
-  const origin = await originHere(io, options.origin)
+  await signInHerdr(io, await originHere(io, options.origin))
+}
+
+/** Signs Herdr in at `origin` by device code, and says how it went. */
+async function signInHerdr(io: Io, origin: string): Promise<void> {
   const result = await signInApp(io, {
     app: 'herdr',
     origin,
@@ -407,9 +437,20 @@ async function doctor(io: Io, place: PluginPlace, options: { wait: boolean }): P
           'Pending You isn’t set up for your agents here: run npx -y pendingyou@latest init',
         ),
   )
-  if (await readAppSignIn(io, 'herdr').catch(() => true)) {
+  // A sign-in that can't be read is undefined here: its status says so.
+  const stored = await readAppSignIn(io, 'herdr').catch(() => undefined)
+  if (stored !== null) {
     const status = await appStatusLines(io, 'herdr')
     io.out(line(status.ok ? '✓' : '!', status.lines[0] ?? ''))
+    if (stored && status.ok)
+      io.out(
+        showsHere(stored)
+          ? line(
+              '✓',
+              'Show in Herdr: press it on a card in Pending You, and Herdr goes to the pane of the agent that asked.',
+            )
+          : line('!', signInAgainForShow(stored.origin)),
+      )
   } else
     io.out(
       line(
@@ -442,9 +483,14 @@ async function doctor(io: Io, place: PluginPlace, options: { wait: boolean }): P
         ),
       )
       io.out(
-        (await watching(place))
-          ? line('✓', 'Its watcher is running (toasts when a pane gains a card).')
-          : line('!', 'Its watcher isn’t running: it starts with Herdr, or with setup.'),
+        !(await watching(place))
+          ? line('!', 'Its watcher isn’t running: it starts with Herdr, or with setup.')
+          : (await olderWatcher(place))
+            ? line(
+                '!',
+                `Its watcher runs an older pendingyou than this one (${VERSION}): setup restarts it.`,
+              )
+            : line('✓', 'Its watcher is running (toasts when a pane gains a card).'),
       )
       io.out(line('·', `Its Agents view is ${(await viewOn(place)) ? 'on' : 'off'}.`))
     } catch (error) {
