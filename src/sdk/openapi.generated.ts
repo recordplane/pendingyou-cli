@@ -773,12 +773,12 @@ export type Assistant = {
       areaId?: string
       liveAt: string
       terminal?: {
-        app: "herdr"
+        app: "herdr" | "tmux" | (string & {})
         paneId: string
         server?: string
       }
       show?: {
-        app: "herdr" | (string & {})
+        app: "herdr" | "tmux" | (string & {})
         where: string
       }
     }[]
@@ -804,7 +804,7 @@ export type Show = {
 }
 
 export type ShowPlace = {
-  app: "herdr" | (string & {})
+  app: "herdr" | "tmux" | (string & {})
   paneId: string
   server?: string
   sessionId: string
@@ -951,7 +951,7 @@ export type ChangesQuery = {
 }
 
 export type ShowsQuery = {
-  places: "herdr"[]
+  places: ("herdr" | "tmux")[]
   wait?: number
 }
 

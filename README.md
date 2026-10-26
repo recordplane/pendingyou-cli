@@ -365,7 +365,10 @@ has a Presence line for each agent.
 Since 0.18.0, a session in a [Herdr](https://herdr.dev) pane also says which pane (`HERDR_PANE_ID`, such as `w2:p1`)
 and which Herdr server (16 hex characters of a hash of the computer's name and Herdr's socket path, never the path
 itself), so Pending You can list where each of an agent's running sessions is and the Pending You plugin for Herdr can
-take you to it. Anywhere else nothing of the kind is sent.
+take you to it. Since 0.39.0, a session in a tmux pane says which the same way (`TMUX_PANE`, such as `%12`, and 16 hex
+characters of a hash of the computer's name and tmux's socket path), so an app you sign in on this computer can bring
+it to the front when you press Show on its card; in a Herdr pane, even one inside tmux, Herdr's is the one it says.
+Anywhere else nothing of the kind is sent.
 
 ## In Herdr
 
@@ -637,7 +640,7 @@ whether the agent has a `pendingyou` MCP server and where it points. In a Herdr 
 Herdr's own command line, on this computer, the badges above: a card's title (redacted, 80 characters at most) and its
 request id, never an answer or a note; `<app>-threads.json` remembers the pane each session runs in, and `herdr.json`
 whether the badges are off. Presence there (0.18.0) also sends Pending You the pane's id and the hash that names its
-Herdr server. With a sign-in that only hears, the hooks and
+Herdr server, and in a tmux pane (0.39.0) the tmux pane's id and the hash that names its tmux server. With a sign-in that only hears, the hooks and
 listeners tell this computer's handed questions from another's by its names: its hostname, the names its sign-ins by
 code were given, a Mac's own name (`scutil --get ComputerName`) and, outside a hook, Tailscale's (`tailscale status`). For a permission prompt's card, the worker reads
 the end of the Claude Code session's transcript only for the name the session gave Pending You, and `git remote

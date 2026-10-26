@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.39.0 (2026-10-25)
+
+- In tmux, your agents' sessions now say which pane they run in, as they have in Herdr since 0.18.0: each presence
+  report carries the pane (`TMUX_PANE`, such as `%12`) and which tmux server it is (16 hex characters of a hash of the
+  computer's name and tmux's socket path, never the path itself). In a Herdr pane Herdr's is the one it says, even when
+  Herdr runs inside tmux. That's what lets an app you signed in on this computer bring the agent's tmux pane to the front
+  when you press Show on its card: the Pending You SDK's `show-in-tmux` example is one, to run on your own account.
+  Nothing else of tmux is read, and nothing is ever run in it. A Pending You from before tmux refuses the pane, and the
+  report goes again without it.
+
 ## 0.38.0 (2026-10-25)
 
 - Show in Herdr: press it on a card in Pending You, at your desk or on your phone, and Herdr moves to the pane of the

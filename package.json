@@ -1,6 +1,6 @@
 {
   "name": "pendingyou",
-  "version": "0.38.0",
+  "version": "0.39.0",
   "description": "Pending You for your coding agents: one command sets up Claude Code, Codex, OpenCode and Pi to ask you through Pending You and hear your answers, even while they sit idle.",
   "keywords": [
     "pendingyou",

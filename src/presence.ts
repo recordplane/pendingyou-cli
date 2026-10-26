@@ -26,9 +26,11 @@
 // them alone), and take them off as the session closes; a SessionEnd hook takes them off in the background.
 //
 // Which terminal (0.18.0): in a Herdr pane every report also says where the session runs, `"terminal": { "app":
-// "herdr", "paneId": "w2:p1", "server": "<16 hex>" }` (herdr.ts's herdrTerminal), and Pending You lists it with the
-// agent's sessions running now. Anywhere else the report is as before, with no `terminal` at all (Pending You keeps
-// what it had). A Pending You from before it refuses the field (400): the same report goes again without it.
+// "herdr", "paneId": "w2:p1", "server": "<16 hex>" }` (herdr.ts's herdrTerminal), and since 0.39.0 in a tmux pane too,
+// `{ "app": "tmux", "paneId": "%12", "server": "<16 hex>" }` (terminal.ts's terminalOf: Herdr's wins in a Herdr pane,
+// even inside tmux). Pending You lists it with the agent's sessions running now, and Show me brings it to the front.
+// Anywhere else the report is as before, with no `terminal` at all (Pending You keeps what it had). A Pending You from
+// before it refuses the field (400), and one from before tmux a tmux pane: the same report goes again without it.
 import { randomBytes } from 'node:crypto'
 import { mkdir, readdir, readFile, rm, rmdir, stat, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -38,9 +40,10 @@ import type { AppId } from './apps/ids.ts'
 import { DEFAULT_ORIGIN } from './args.ts'
 import { readCredential } from './credentials.ts'
 import { configDir, readJson, withLock, writeWhole } from './files.ts'
-import { herdrTarget, herdrTerminal, reportCommand } from './herdr.ts'
+import { herdrTarget, reportCommand } from './herdr.ts'
 import type { Io } from './io.ts'
 import { endPrompts, sessionName } from './permission.ts'
+import { terminalOf } from './terminal.ts'
 
 type Json = Record<string, unknown>
 
@@ -136,9 +139,9 @@ export function presenceName(name: string | null | undefined): string | null {
 
 /**
  * Sends one presence, quietly: a 401 is tried once more after a refresh in the background, a 429 once more after its
- * retry-after (when `patient`: a background send, never a hook). In a Herdr pane it says which (0.18.0), and a 400 is
- * tried once more without it: a Pending You from before `terminal` refuses what it doesn't know. Never throws; each
- * try gives up after `timeoutMs`.
+ * retry-after (when `patient`: a background send, never a hook). In a Herdr or tmux pane it says which (0.18.0, 0.39.0),
+ * and a 400 is tried once more without it: a Pending You from before `terminal`, or before tmux's, refuses what it
+ * doesn't know. Never throws; each try gives up after `timeoutMs`.
  */
 export async function sendPresence(
   io: Io,
@@ -162,8 +165,8 @@ export async function sendPresence(
       cwd: presence.cwd && presence.cwd.length <= CWD_MAX ? presence.cwd : null,
       state: presence.state,
     }
-    // Where it runs, only when that's a Herdr pane: anywhere else the report says nothing of it.
-    const terminal = herdrTerminal(io.env, io.host)
+    // Where it runs, only when that's a Herdr or tmux pane: anywhere else the report says nothing of it.
+    const terminal = terminalOf(io.env, io.host)
     let body: Json = terminal ? { ...plain, terminal } : plain
     const send = (force: boolean) =>
       postJson(io, origin, PRESENCE_PATH, body, timeoutMs, {

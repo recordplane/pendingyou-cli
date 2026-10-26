@@ -1,2 +1,2 @@
 // The command line's version, as published (package.json). A test keeps them the same.
-export const VERSION = '0.38.0'
+export const VERSION = '0.39.0'
