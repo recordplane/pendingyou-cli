@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.40.0 (2026-10-28)
+
+- Pending You for Herdr answers "Ask Maple again?": when one of your agents asks to send its card to another of your
+  assistants, one you handed one of its cards to before, the popup shows the card as Maple will see it, what Maple
+  helped with before and where its answer would go, and `y` says yes this time (the card goes to Maple, as handing it
+  over does, and `u` takes it back for 5 seconds) while `n` says no (the agent hears "Don’t send it to Maple"). Saying
+  "from now on" stays in Pending You. When Maple isn't one Herdr may hand the card to (it runs on another computer, or
+  it's gone), the card says to say yes in Pending You, and `n` still says no.
+- A card your agent asked to send a teammate ("Send this to Doug?") says to answer it in Pending You, and `o` opens it:
+  no key answers it from Herdr. Before, the popup showed it as a plain card, and Pending You refused the answer.
+- Both need a Pending You that says whom a card is to go to (2026-10-28); with an older one the popup is as before.
+
 ## 0.39.0 (2026-10-25)
 
 - In tmux, your agents' sessions now say which pane they run in, as they have in Herdr since 0.18.0: each presence

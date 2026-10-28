@@ -16,12 +16,17 @@
 // seconds, t goes to its agent's pane, o opens it in Pending You, a opens all your cards there, ↑↓ (or j and k) move
 // and q (or Esc) closes.
 //
+// A card waiting to be sent (its `sendTo`, 0.40.0; docs/plans/2026-10-27-introductions.md §7) is shown as they'll see
+// it, and its own kind's keys answer nothing: its question is theirs. "Ask Maple again?" takes y, yes this time (handed
+// to Maple where and how Pending You says: `sendTo.to`, in `sendTo.mode`), and n, no (`notSent`); never "from now on",
+// which is the person's in Pending You. A teammate's, "Send this to Doug?", is answered in Pending You: o opens it.
+//
 // High stakes are never answered here: a card that spends money, can't be undone or goes public (its own flag, its
 // approval's risk, or any of its questions') takes no key but o, t and moving. Pending You refuses an app's answer to one
 // anyway (403 high_stakes); the popup never sends one. What a card allows this sign-in (`actions`) is Pending You's to
 // say, and a key it doesn't allow says where to do it instead.
 import { cleanValue } from '../herdr.ts'
-import type { AnswerRequest, Assistant, Card, CardList } from '../sdk/index.ts'
+import type { AnswerRequest, Assistant, Card, CardList, SendTo } from '../sdk/index.ts'
 
 /** How long an answer, Later or handing over can be undone, unless Pending You says. */
 export const UNDO_MS = 5000
@@ -38,6 +43,8 @@ type Question = NonNullable<Card['questions']>[number]
 export interface Target {
   assistantId: string
   agentId?: string
+  /** "Maple": who it's handed to, in words. Absent: the label's name. */
+  name?: string
   /** "Maple (Codex)". */
   label: string
   /** "live · pane w3:p2", "recent". */
@@ -63,8 +70,9 @@ export type Screen =
 /** The last thing sent that can be undone, while it can. */
 export interface Sent {
   cardId: string
-  what: 'answer' | 'later' | 'delegate'
-  /** What was sent, in words: "Deploy now", "Tonight", "Maple". */
+  /** `not_sent`: no to a card waiting to be sent, an answer too. */
+  what: 'answer' | 'not_sent' | 'later' | 'delegate'
+  /** What was sent, in words: "Deploy now", "Tonight", "Maple"; for `not_sent`, whom it wasn't sent to. */
   words: string
   /** Until when it can be undone (milliseconds). */
   until: number
@@ -132,6 +140,29 @@ const askerName = (card: Card) => card.asker.agent?.name ?? card.asker.assistant
 export const HIGH_STAKES =
   'High stakes: answer it in Pending You, where you hold to approve. o opens it.'
 export const NOT_HERE = 'Answer this one in Pending You: o opens it.'
+/** "Ask Maple again?" when Herdr can't hand it to Maple: Maple gone or out of this sign-in's reach, or no handing over. */
+export const SAY_YES_THERE = 'Say yes in Pending You: o opens it.'
+/** Any other key on "Ask Maple again?": its question is Maple's. */
+const ASK_AGAIN_KEYS = 'y: yes, this time; n: no.'
+
+/** Whom a card waits to be sent to, while it waits on you: null for any other card. */
+export const sendToOf = (card: Card): SendTo | null =>
+  card.sendTo && (card.status === 'pending' || card.status === 'snoozed') ? card.sendTo : null
+
+/** It asks one of your own assistants again, "Ask Maple again?": y and n answer it here. */
+const asksAgain = (sendTo: SendTo) => sendTo.kind === 'assistant'
+
+/** A card to send a teammate (or anyone this popup doesn't know yet): answered in Pending You. */
+export const toTeammate = (card: Card) =>
+  `Send this to ${card.sendTo?.name ?? 'them'}? Answer it in Pending You: o opens it.`
+
+/** "Sep 26": the day something was, in this computer's time zone. */
+const dayOf = (at: string) => {
+  const when = new Date(at)
+  return Number.isNaN(when.getTime())
+    ? ''
+    : when.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
 
 /** The kinds of card the popup answers. /v1 may send a newer one: that one is answered in Pending You. */
 const KINDS: readonly string[] = [
@@ -151,8 +182,12 @@ const QUESTION_KINDS: readonly string[] = [
   'text',
 ] satisfies Question['kind'][]
 
-/** This card can be answered from the popup: this sign-in may, and the popup knows its kind (and its questions'). */
+/**
+ * This card can be answered from the popup by its own kind's keys: this sign-in may, the popup knows its kind (and its
+ * questions'), and it isn't waiting to be sent (its question is theirs; y and n answer "Ask Maple again?").
+ */
 const answersHere = (card: Card) =>
+  !sendToOf(card) &&
   card.actions.includes('answer') &&
   KINDS.includes(card.kind) &&
   (card.questions ?? []).every((question) => QUESTION_KINDS.includes(question.kind))
@@ -268,8 +303,56 @@ function listKey(state: QueueState, key: string, now: number): [QueueState, Queu
       { kind: 'targets', card },
     ]
   }
+  const sendTo = sendToOf(card)
+  if (sendTo) return sendToKey(state, card, sendTo, key)
   if (!answersHere(card)) return [{ ...state, note: NOT_HERE }, NONE]
   return answerKey(state, card, key)
+}
+
+/**
+ * A key on a card waiting to be sent. "Ask Maple again?": y says yes this time, handing it to Maple where and how
+ * Pending You says (`to`, `mode`), and n says no (`notSent`). A teammate's is answered in Pending You.
+ */
+function sendToKey(
+  state: QueueState,
+  card: Card,
+  sendTo: SendTo,
+  key: string,
+): [QueueState, QueueEffect] {
+  if (!asksAgain(sendTo)) return [{ ...state, note: toTeammate(card) }, NONE]
+  if (key === 'y') {
+    const to = sendTo.to
+    if (!to || !card.actions.includes('delegate')) return [{ ...state, note: SAY_YES_THERE }, NONE]
+    return [
+      { ...state, note: '' },
+      {
+        kind: 'delegate',
+        card,
+        target: {
+          assistantId: to.assistantId,
+          agentId: to.agentId,
+          name: sendTo.name,
+          label: sendTo.name,
+          detail: '',
+        },
+        // As Pending You says the yes hands it over; back to you first unless it says straight to the asker.
+        mode: sendTo.mode === 'freely' ? 'freely' : 'loop',
+      },
+    ]
+  }
+  if (key === 'n') {
+    if (!card.actions.includes('answer')) return [{ ...state, note: NOT_HERE }, NONE]
+    return [
+      { ...state, note: '' },
+      {
+        kind: 'answer',
+        card,
+        answer: { version: card.version, notSent: true },
+        words: sendTo.name,
+      },
+    ]
+  }
+  return [{ ...state, note: ASK_AGAIN_KEYS }, NONE]
 }
 
 /** A key that answers the card on screen, by its kind. */
@@ -553,6 +636,7 @@ export function targetsFor(card: Card, assistants: readonly Assistant[]): Target
       if (assistant.id === card.asker.assistant.id) continue
       targets.push({
         assistantId: assistant.id,
+        name: assistant.name,
         label: `${assistant.name} (${assistant.appName})`,
         detail: [...where].join(' · ') || 'in the cloud',
       })
@@ -564,6 +648,7 @@ export function targetsFor(card: Card, assistants: readonly Assistant[]): Target
       targets.push({
         assistantId: assistant.id,
         agentId: agent.id,
+        name: agent.name,
         label: `${agent.name} (${assistant.appName})`,
         detail: [agent.state, ...where, ...(pane ? [`pane ${pane}`] : [])].join(' · '),
       })
@@ -654,20 +739,26 @@ export function headingOf(state: QueueState): string {
   return `Pending You · ${body}${elsewhere}${state.demo ? ' (demo)' : ''}`
 }
 
-/** The lines that say what a card asks, and the keys that answer it. */
+/**
+ * The lines that say what a card asks, and the keys that answer it. A card waiting to be sent is shown as they'll see
+ * it, its options and suggestions marked rather than numbered (no key of yours picks one), then what it asks of you.
+ */
 function askLines(card: Card, state: QueueState, room: number, now: number): string[] {
   const fit = (text: string) => cleanValue(text, room)
   const lines: string[] = []
+  const sendTo = sendToOf(card)
+  /** An option's or a suggestion's key: its number, or a mark on a card shown as they'll see it. */
+  const keyOf = (index: number) => (sendTo ? '·' : `${index + 1}`)
   const options = (
     list: Card['options'],
     recommended: readonly string[] = [],
     chosen?: readonly string[],
   ) =>
     (list ?? []).slice(0, KEYS_MAX).map((option, index) => {
-      const box = chosen ? (chosen.includes(option.id) ? '[x] ' : '[ ] ') : ''
+      const box = chosen && !sendTo ? (chosen.includes(option.id) ? '[x] ' : '[ ] ') : ''
       const star = recommended.includes(option.id) ? '★ ' : ''
       return fit(
-        `${box}${index + 1} ${star}${option.label}${option.detail ? ` · ${option.detail}` : ''}`,
+        `${box}${keyOf(index)} ${star}${option.label}${option.detail ? ` · ${option.detail}` : ''}`,
       )
     })
   const more = (list: readonly unknown[] | undefined) =>
@@ -692,7 +783,7 @@ function askLines(card: Card, state: QueueState, room: number, now: number): str
     case 'text':
       if (card.text?.placeholder) lines.push(DIM(fit(card.text.placeholder)))
       for (const [index, suggestion] of (card.text?.suggestions ?? []).slice(0, KEYS_MAX).entries())
-        lines.push(fit(`${index + 1} ${suggestion}`))
+        lines.push(fit(`${keyOf(index)} ${suggestion}`))
       break
     case 'action':
       for (const [index, step] of steps(card).entries()) {
@@ -706,6 +797,10 @@ function askLines(card: Card, state: QueueState, room: number, now: number): str
       break
     case 'group': {
       const questions = card.questions ?? []
+      if (sendTo) {
+        for (const question of questions) lines.push(fit(`· ${question.title}`))
+        break
+      }
       for (const [index, question] of questions.entries()) {
         const answer = state.answers[question.id]
         const mark = index === state.question ? '▸' : answer ? '✓' : '·'
@@ -744,9 +839,47 @@ function askLines(card: Card, state: QueueState, room: number, now: number): str
     lines.push(
       DIM(fit(`If you don’t answer ${fromNow(card.fallback.at, now)}: ${card.fallback.text}`)),
     )
+  if (sendTo) lines.push(...sendToLines(card, sendTo, room))
   if (card.highStakes) lines.push(...wrap(HIGH_STAKES, room, 2))
-  else if (!answersHere(card)) lines.push(...wrap(NOT_HERE, room, 2))
+  else if (!sendTo && !answersHere(card)) lines.push(...wrap(NOT_HERE, room, 2))
   return lines
+}
+
+/**
+ * What a card waiting to be sent asks of you. "Ask Maple again?": what Maple helped with before, and where its answer
+ * would go (the web's words: "Maple helped with “…” on Sep 26. Maple’s answer goes straight to Wren."), and when Herdr
+ * can't hand it to Maple, that the yes is in Pending You. A teammate's: answer it in Pending You.
+ */
+function sendToLines(card: Card, sendTo: SendTo, room: number): string[] {
+  if (!asksAgain(sendTo)) return wrap(toTeammate(card), room, 2)
+  const name = sendTo.name
+  const helped = sendTo.helped
+  const on = helped && dayOf(helped.at) ? ` on ${dayOf(helped.at)}` : ''
+  const before = helped
+    ? helped.answered
+      ? `${name} helped with “${helped.title}”${on}.`
+      : `You handed ${name} “${helped.title}”${on}.`
+    : null
+  const goes =
+    sendTo.mode === 'freely'
+      ? `${name}’s answer goes straight to ${askerName(card)}.`
+      : `${name}’s answer comes back to you first.`
+  const yesHere = Boolean(sendTo.to) && card.actions.includes('delegate')
+  return [
+    BOLD(cleanValue(`Ask ${name} again?`, room)),
+    ...(before ? wrap(before, room, 2) : []),
+    ...wrap(goes, room, 2),
+    ...(yesHere || card.highStakes ? [] : wrap(SAY_YES_THERE, room, 2)),
+  ]
+}
+
+/** The keys that answer a card waiting to be sent: y and n on "Ask Maple again?", as this sign-in may; none else. */
+function sendToKeys(card: Card, sendTo: SendTo): string[] {
+  if (!asksAgain(sendTo)) return []
+  return [
+    ...(sendTo.to && card.actions.includes('delegate') ? ['y yes, this time'] : []),
+    ...(card.actions.includes('answer') ? ['n no'] : []),
+  ]
 }
 
 /** A group question's answer, in words. */
@@ -818,7 +951,9 @@ export function keysLine(state: QueueState, now: number): string {
   if (card) {
     const busy = state.sent?.cardId === card.id && now < state.sent.until
     if (!card.highStakes && !busy) {
-      if (answersHere(card)) keys.push(...answerKeys(card, state))
+      const sendTo = sendToOf(card)
+      if (sendTo) keys.push(...sendToKeys(card, sendTo))
+      else if (answersHere(card)) keys.push(...answerKeys(card, state))
       if (card.actions.includes('reply')) keys.push('r reply')
       if (card.actions.includes('later')) keys.push('l later')
       if (card.actions.includes('delegate')) keys.push('d hand over')
@@ -838,6 +973,8 @@ export function sentLine(state: QueueState, now: number): string | null {
   switch (sent.what) {
     case 'answer':
       return `Sent: ${sent.words} · ${undo}`
+    case 'not_sent':
+      return `Not sent to ${sent.words} · ${undo}`
     case 'later':
       return `In Later: ${sent.words.toLowerCase()} · ${undo}`
     case 'delegate':

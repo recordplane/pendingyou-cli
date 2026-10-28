@@ -407,7 +407,8 @@ with a key: 1–9 for a choice (Enter sends several), y or n to approve or decli
 a step done or not, Tab between a grouped card's questions; r writes to the agent, l puts it in Later, d hands it to
 another of your agents, u undoes for 5 seconds, t goes to the agent's pane, o opens the card in Pending You. A
 high-stakes card (it spends money, can't be undone or goes public) is never answered from Herdr: o opens it where you
-hold to approve. Pending You says on the card and to the agent "Answered in Herdr on build-01". While you're active in
+hold to approve. Since 0.40.0, when an agent asks to send its card to another of your assistants ("Ask Maple
+again?"), y says yes this time and n says no; one it asks to send a teammate is answered in Pending You, and o opens it. Pending You says on the card and to the agent "Answered in Herdr on build-01". While you're active in
 Herdr (moving between panes, tabs and workspaces, or pressing keys in the popup) your phone stays quiet for those cards,
 as it does while Pending You is open on your desk.
 

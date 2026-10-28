@@ -408,20 +408,18 @@ export async function queuePopup(
           return false
         }
       }
-      case 'answer':
+      case 'answer': {
+        // No to a card waiting to be sent says whom it wasn't sent to: "Not sent to Maple".
+        const what = effect.answer.notSent ? 'not_sent' : 'answer'
         if (!client) {
-          state = sentState(
-            state,
-            { cardId: effect.card.id, what: 'answer', words: effect.words },
-            now,
-          )
+          state = sentState(state, { cardId: effect.card.id, what, words: effect.words }, now)
           return false
         }
         try {
           const done = await client.cards.answer(effect.card.id, effect.answer)
           state = sentState(
             state,
-            { cardId: effect.card.id, what: 'answer', words: effect.words, until: done.undoUntil },
+            { cardId: effect.card.id, what, words: effect.words, until: done.undoUntil },
             io.now(),
           )
         } catch (error) {
@@ -429,6 +427,7 @@ export async function queuePopup(
           stale = true
         }
         return false
+      }
       case 'undo': {
         if (!client) {
           state = { ...state, sent: null, note: 'Undone: it’s waiting on you again.' }
@@ -436,7 +435,7 @@ export async function queuePopup(
         }
         try {
           const { cardId, what } = effect.sent
-          if (what === 'answer') await client.cards.undo(cardId)
+          if (what === 'answer' || what === 'not_sent') await client.cards.undo(cardId)
           else if (what === 'later') await client.cards.back(cardId)
           else await client.cards.takeBack(cardId)
           state = { ...state, sent: null, note: 'Undone: it’s waiting on you again.' }
@@ -481,7 +480,7 @@ export async function queuePopup(
         return false
       }
       case 'delegate': {
-        const name = effect.target.label.replace(/ \(.*\)$/, '')
+        const name = effect.target.name ?? effect.target.label.replace(/ \(.*\)$/, '')
         if (!client) {
           state = sentState(state, { cardId: effect.card.id, what: 'delegate', words: name }, now)
           return false
