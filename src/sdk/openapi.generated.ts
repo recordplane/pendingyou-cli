@@ -18,7 +18,7 @@ export type Me = {
   }
   grant: {
     id: string
-    scopes: ("cards:read" | "cards:read:all" | "cards:answer" | "cards:reply" | "cards:later" | "cards:delegate" | "assistants:read" | "assistants:show" | "presence:desk" | "cards:high_stakes" | "cards:manage" | "account:manage" | (string & {}))[]
+    scopes: ("cards:read" | "cards:read:all" | "cards:answer" | "cards:reply" | "cards:later" | "cards:delegate" | "assistants:read" | "assistants:show" | "presence:desk" | "cards:high_stakes" | "cards:manage" | "account:manage" | "presence:focus" | (string & {}))[]
     reach: "machine" | "all" | (string & {})
     machine?: {
       id: string
@@ -847,6 +847,20 @@ export type ShowAnswer = {
   answeredAt: string
 }
 
+export type FocusResponse = {
+  held: string[]
+  idleSeconds: number
+  everySeconds: number
+}
+
+export type FocusPlace = {
+  app: "herdr"
+  /** The focused Herdr pane: "w2:p1". */
+  paneId: string
+  /** Which Herdr server: sha256(hostname + HERDR_SOCKET_PATH), its first 16 hex characters. */
+  server: string
+}
+
 export type Problem = {
   type: string
   title: string
@@ -993,4 +1007,15 @@ export type ShowAnswerRequest = {
 
 export type PresenceRequest = {
   here: boolean
+}
+
+export type FocusRequest = {
+  place: {
+    app: "herdr"
+    /** The focused Herdr pane: "w2:p1". */
+    paneId: string
+    /** Which Herdr server: sha256(hostname + HERDR_SOCKET_PATH), its first 16 hex characters. */
+    server: string
+  } | null
+  activeAt: string
 }
