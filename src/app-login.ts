@@ -56,11 +56,19 @@ export const APP_SCOPES = [
   'presence:desk',
 ] as const
 
+/**
+ * What Herdr asks for: every scope of the catalogue, and since 0.41.0 `presence:focus`, a scope only Pending You's own
+ * apps may hold: saying which pane you're in, so a card the agent there also asks you waits while you stay
+ * (herdr/focus.ts).
+ */
+export const HERDR_SCOPES = [...APP_SCOPES, 'presence:focus'] as const
+
 /** Pending You's own apps that sign in here, by slug: their name, and what they ask for. */
 export const FIRST_PARTY_APPS: Record<string, { name: string; scopes: readonly string[] }> = {
   // Everything: `cards:read:all` only puts the tick on the card, off unless the person ticks it. A sign-in from before
-  // 0.38.0 lacks `assistants:show`: the plugin's setup and doctor say to sign in again for Show in Herdr.
-  herdr: { name: 'Herdr', scopes: APP_SCOPES },
+  // 0.38.0 lacks `assistants:show`, and one from before 0.41.0 `presence:focus`: the plugin's setup and doctor say to
+  // sign in again for each.
+  herdr: { name: 'Herdr', scopes: HERDR_SCOPES },
 }
 
 /** What a sign-in asks for when an app registered by its client says nothing. */
@@ -121,6 +129,7 @@ const MAY: Record<string, string> = {
   'assistants:read': 'see your assistants',
   'assistants:show': 'bring the assistant that asked to the front when you press Show',
   'presence:desk': 'keep your phone quiet while you use it',
+  'presence:focus': 'hold cards from the agent whose pane you’re in until you leave it',
 }
 
 /** "A and B", "A, B and C". */

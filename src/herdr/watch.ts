@@ -17,15 +17,30 @@
 // watcher does. Nothing it hears is ever thrown: a refusal waits SHOWS_AGAIN_MS before it asks again, a sign-in that
 // ended is said once as above, and the network's failures are waited out as the SDK does. Its lease says which
 // pendingyou it is, so setup can tell one from before Show in Herdr and start this one's instead.
+//
+// Holding cards while you're in the agent's pane (0.41.0, herdr/focus.ts; docs/plans/2026-11-03-herdr-focus-hold.md):
+// once the sign-in holds `presence:focus`, it also tells Pending You which pane you're in and your last sign of you in
+// Herdr (focus moving, keys in the popup, and each message you send the agent in that pane), so a card that agent also
+// asks you there waits while you stay. It keeps what's held off Herdr's badges (and so the sidebar, the popup, `next`
+// and its own toasts), and puts each card back the moment Pending You shows it.
 import { randomBytes } from 'node:crypto'
 import { mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { appClient, RENEW_WITHIN_MS, readAppSignIn } from '../app-login.ts'
-import { herdrServer } from '../herdr.ts'
+import { herdrServer, TOKENS } from '../herdr.ts'
 import type { Io } from '../io.ts'
 import { atLeast } from '../mod.ts'
-import { type Client, type Credentials, SignedOutError } from '../sdk/index.ts'
+import { ApiError, type Client, type Credentials, SignedOutError } from '../sdk/index.ts'
 import { VERSION } from '../version.ts'
+import {
+  applyHeld,
+  type FocusSpot,
+  focusDue,
+  focusRefused,
+  focusSent,
+  freshFocus,
+  lastMessage,
+} from './focus.ts'
 import { due, emptyNotices, look, type Notices, type Toast } from './notice.ts'
 import { readWaiting, type Waiting } from './panes.ts'
 import { agentView, type PluginPlace, pluginOff, viewOn } from './plugin.ts'
@@ -179,17 +194,23 @@ export async function watchStep(
   io: Pick<Io, 'now'>,
   socket: string,
   state: Notices,
-  options: { read: boolean; last: { waiting: Waiting[]; viewing: string | null } },
+  options: { read: boolean; last: Seen },
 ): Promise<{
   state: Notices
-  last: { waiting: Waiting[]; viewing: string | null }
+  last: Seen
   toast: string | null
 }> {
   let last = options.last
   let next = state
   if (options.read) {
     const { snapshot, waiting } = await readWaiting(socket)
-    last = { waiting, viewing: snapshot.focusedTab }
+    const focused = snapshot.panes.find((pane) => pane.paneId === snapshot.focusedPane)
+    last = {
+      waiting,
+      viewing: snapshot.focusedTab,
+      focusedPane: snapshot.focusedPane,
+      focusedCards: focused?.tokens[TOKENS.cards] ?? '',
+    }
     next = look(next, last.waiting, io.now())
   }
   const decided = due(next, last.waiting, io.now(), last.viewing)
@@ -197,6 +218,17 @@ export async function watchStep(
   const toast = decided.toast ? await showToast(socket, decided.toast) : null
   return { state: next, last, toast }
 }
+
+/** What the watcher last read of Herdr: the panes waiting on you, the tab and pane you're looking at, that pane's cards. */
+export interface Seen {
+  waiting: Waiting[]
+  viewing: string | null
+  focusedPane?: string | null
+  /** Its py_cards token as it stands (its cards' ids): a new one there asks Pending You about holding at once. */
+  focusedCards?: string
+}
+
+export const nothingSeen = (): Seen => ({ waiting: [], viewing: null })
 
 /** Herdr's events that mean you moved in it: a pane, tab or workspace focused (as subscribed, or as delivered). */
 const FOCUS_EVENTS = new Set([
@@ -251,6 +283,21 @@ export function signInKeeper(io: Io, socket: string, place: PluginPlace) {
   let following: { signIn: string; stop: AbortController } | null = null
   /** When Pending You last refused to let a sign-in follow them: it isn't asked again for SHOWS_AGAIN_MS. */
   let refused: { signIn: string; at: number } | null = null
+  /** Whether the sign-in may say which pane you're in (presence:focus: holding cards, 0.41.0). */
+  let focusing = false
+  let focus = freshFocus()
+  /** The cards held now, as Pending You last said, kept off the badges. */
+  let held: ReadonlySet<string> = new Set()
+  /** The focused pane's cards as last looked at: a new card there is worth asking about at once. */
+  let cardsSeen: string | null = null
+  /** Puts every held card back on its badges (the sign-in ended, or the watcher stops). */
+  const unhold = async () => {
+    if (!held.size) return
+    const before = held
+    held = new Set()
+    focus = freshFocus()
+    await applyHeld(io, server, before, held, io.now()).catch(() => 0)
+  }
 
   const stopShows = () => {
     following?.stop.abort()
@@ -261,6 +308,7 @@ export function signInKeeper(io: Io, socket: string, place: PluginPlace) {
     if (which === null || which !== current) return
     client = null
     stopShows()
+    await unhold()
     if (endedSignIn !== which) {
       endedSignIn = which
       await showToast(socket, SIGNED_OUT_TOAST)
@@ -297,6 +345,7 @@ export function signInKeeper(io: Io, socket: string, place: PluginPlace) {
         client = null
         current = signIn
         stopShows()
+        await unhold()
         return
       }
       if (signIn !== current || !client) {
@@ -307,19 +356,52 @@ export function signInKeeper(io: Io, socket: string, place: PluginPlace) {
       }
       presence = stored.scopes.includes('presence:desk')
       shows = stored.scopes.includes('assistants:show')
+      focusing = stored.scopes.includes('presence:focus')
+      if (!focusing) await unhold()
       if (shows) followShows()
       else stopShows()
     },
-    /** Stops following Show in Herdr's presses: the watcher is stopping. */
-    stop() {
+    /** Stops following Show in Herdr's presses, and puts held cards back on their badges: the watcher is stopping. */
+    async stop() {
       stopShows()
+      await unhold()
     },
-    /** One look: presence when it's due, and the sign-in's end when it's time to ask. */
-    async tick() {
+    /** One look: presence when it's due, where you are when that's due, and the sign-in's end when it's time to ask. */
+    async tick(seen: Seen = nothingSeen()) {
       if (!client) return
       const now = io.now()
+      const popup = await lastActive(place)
+      if (focusing && server) {
+        const pane = seen.focusedPane ?? null
+        const said = pane ? await lastMessage(io, server, pane) : null
+        const latest = Math.max(focusAt ?? -1, popup ?? -1, said ?? -1)
+        const spot: FocusSpot | null = pane ? { server, paneId: pane } : null
+        const cards = seen.focusedCards ?? ''
+        // A card arrived on the pane you're in: ask now whether it's held, so it never shows on its badge for long.
+        const nudge = cardsSeen !== null && cards !== '' && cards !== cardsSeen
+        cardsSeen = cards
+        const look = { now, spot, activeAt: latest >= 0 ? latest : null, nudge }
+        if (focusDue(focus, look))
+          try {
+            const answer = await client.focus({
+              place: spot ? { app: 'herdr', paneId: spot.paneId, server: spot.server } : null,
+              activeAt: new Date(Math.max(0, latest)).toISOString(),
+            })
+            focus = focusSent(focus, look, answer)
+            const before = held
+            held = new Set(answer.held)
+            // The held list is kept fresh at every report; the badges are written again only where it changed.
+            await applyHeld(io, server, before, held, now)
+          } catch (error) {
+            if (error instanceof SignedOutError) return ended()
+            // Signed in before presence:focus, or a Pending You that doesn't hold cards: quiet for a while.
+            if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
+              focus = focusRefused(focus, now)
+              await unhold()
+            } else focus = { ...focus, sentAt: now }
+          }
+      }
       if (presence) {
-        const popup = await lastActive(place)
         const activeAt = Math.max(focusAt ?? -1, popup ?? -1)
         const step = deskStep(desk, activeAt >= 0 ? activeAt : null, now)
         if (step.send !== null)
@@ -367,7 +449,7 @@ export async function watch(
   if (!lease) return 0
   const socket = place.socket
   let state = emptyNotices()
-  let last: { waiting: Waiting[]; viewing: string | null } = { waiting: [], viewing: null }
+  let last: Seen = nothingSeen()
   const signIn = signInKeeper(io, socket, place)
   try {
     while (!io.signal.aborted) {
@@ -396,7 +478,7 @@ export async function watch(
         } catch {
           live.changed = true
         }
-        await signIn.tick().catch(() => {})
+        await signIn.tick(last).catch(() => {})
         if (io.now() - checked >= RENEW_MS) {
           checked = io.now()
           await signIn.renew()
@@ -419,8 +501,8 @@ export async function watch(
   } catch {
     return 0
   } finally {
-    // Show in Herdr's wait is given up with the watcher.
-    signIn.stop()
+    // Show in Herdr's wait is given up with the watcher, and held cards go back on their badges.
+    await signIn.stop().catch(() => {})
     if ((await holder(place))?.id === lease)
       await rm(leasePath(place), { force: true }).catch(() => {})
   }

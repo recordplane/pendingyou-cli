@@ -427,6 +427,18 @@ Claude Code). Otherwise Pending You hears "not found", and nothing moves. It onl
 never types into one, runs or opens anything, and logs nothing. Setup starts this version's watcher in place of one
 from an older pendingyou, which doesn't listen.
 
+### Holding cards while you're in the agent's pane (0.41.0)
+
+When the agent in the Herdr pane you're in also asks you something there, Pending You keeps its card out of sight while
+you stay: answer it in the pane and it never shows; leave the pane, go 5 minutes without a sign of you in Herdr, or let
+30 minutes pass, and it shows as a new card. The watcher tells Pending You which pane you're in and your last sign of you
+there once Herdr's sign-in allows it (`presence:focus`, which only Pending You's own apps may hold; a sign-in from before
+0.41.0 doesn't hold it, and setup and doctor say to sign in again). The signs are moving between panes, tabs and
+workspaces, keys in the popup, and each message you send the agent in that pane: its app's next-message hook notes the
+moment in `~/.config/pendingyou/herdr/messages/`, never the words. A held card stays off the pane's badges (the sidebar's
+row, the popup, `next`, the toasts) and comes back the moment it shows. Turn it off in Pending You: Settings ›
+Notifications › In Herdr.
+
 ## How Claude Code hears your answer
 
 **Claude Code 2.1.287 or later: the wake mod.** There's nothing to run. In each session the mod learns the cards

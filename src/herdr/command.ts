@@ -256,6 +256,17 @@ const showsHere = (stored: Credentials) => stored.scopes.includes('assistants:sh
 const signInAgainForShow = (origin: string) =>
   `Sign Herdr in again to use Show in Herdr: npx pendingyou app login herdr${originArgs(origin)}`
 
+/** Whether Herdr's sign-in may say which pane you're in (presence:focus: holding cards, 0.41.0). */
+const holdsHere = (stored: Credentials) => stored.scopes.includes('presence:focus')
+
+/** What setup and doctor say to a sign-in made before holding cards. */
+const signInAgainForHold = (origin: string) =>
+  `Sign Herdr in again to hold cards while you’re in an agent’s pane: npx pendingyou app login herdr${originArgs(origin)}`
+
+/** What doctor says once the sign-in may hold cards. */
+export const HOLDING_LINE =
+  'Holding cards: a card the agent in the pane you’re in also asks you there waits in Pending You until you leave the pane, go 5 minutes without a sign of you in Herdr, or 30 minutes pass (Settings › Notifications › In Herdr).'
+
 /** Starts this version's watcher unless one runs; one from an older pendingyou (before Show in Herdr) gives way. */
 async function startWatcher(io: Io, place: PluginPlace): Promise<void> {
   if (!place.socket) return
@@ -339,9 +350,10 @@ async function signInStep(
     io.out(
       `${line('✓', `Herdr is signed in to Pending You at ${stored.origin}: its popup (prefix+y) answers your cards with a key.`)}  npx pendingyou app status herdr says what it may do and for how long.\n\n`,
     )
-    if (showsHere(stored)) return
-    // Signed in before Show in Herdr: again, at the same Pending You, for it.
-    io.out(line('!', signInAgainForShow(stored.origin)))
+    if (showsHere(stored) && holdsHere(stored)) return
+    // Signed in before Show in Herdr, or before holding cards: again, at the same Pending You, for them.
+    if (!showsHere(stored)) io.out(line('!', signInAgainForShow(stored.origin)))
+    if (!holdsHere(stored)) io.out(line('!', signInAgainForHold(stored.origin)))
     if (options.yes || !io.interactive || !(await ask('Sign Herdr in again now?'))) {
       io.out('\n')
       return
@@ -450,6 +462,10 @@ async function doctor(io: Io, place: PluginPlace, options: { wait: boolean }): P
               'Show in Herdr: press it on a card in Pending You, and Herdr goes to the pane of the agent that asked.',
             )
           : line('!', signInAgainForShow(stored.origin)),
+      )
+    if (stored && status.ok)
+      io.out(
+        holdsHere(stored) ? line('✓', HOLDING_LINE) : line('!', signInAgainForHold(stored.origin)),
       )
   } else
     io.out(

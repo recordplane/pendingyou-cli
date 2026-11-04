@@ -85,6 +85,7 @@ import {
   isHandedWake,
 } from './format.ts'
 import { goesBy, HANDED_GRACE_MS, namesAnotherComputer } from './handed.ts'
+import { noteMessage } from './herdr/focus.ts'
 import { herdrTarget, reportCommand } from './herdr.ts'
 import { holdCommand } from './hold.ts'
 import type { Io } from './io.ts'
@@ -392,6 +393,9 @@ export async function pickup(
   try {
     const input = await hookInput(io)
     const { cwd } = input
+    // Herdr (0.41.0, herdr/focus.ts): a message you send the agent in a Herdr pane is a sign you're in that pane
+    // (the plan's D3), noted for the watcher, so a card held there stays held while you're writing to it. A time only.
+    if (mode === 'handoff' && (await herdrTarget(io))) await noteMessage(io)
     // This computer's sign-ins linked to it by its key, every few hours, in the background (0.29.0, link.ts).
     await linkSoon(io, origin)
     // The person wrote: whatever Claude Code (0.13.0) or Codex (0.15.0) asked their OK for there is answered

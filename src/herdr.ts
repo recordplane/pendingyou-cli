@@ -38,6 +38,7 @@ import { createHash } from 'node:crypto'
 import { isAbsolute, join } from 'node:path'
 import type { AppId } from './apps/ids.ts'
 import { configDir, readJson, writeWhole } from './files.ts'
+import { forgetPane, notHeld, readHeld, savePane } from './herdr/focus.ts'
 import type { Io } from './io.ts'
 import { cut, redactText } from './redact.ts'
 
@@ -322,25 +323,37 @@ export async function runHerdr(
   }
 }
 
-/** Writes a report onto this process's pane, when it's in Herdr and the badges are on. Never throws. */
+/**
+ * Writes a report onto this process's pane, when it's in Herdr and the badges are on. Never throws. Since 0.41.0 its
+ * cards are kept for the watcher (herdr/focus.ts's savePane), and a card held while you're in the agent's pane (the
+ * watcher's held list) is left out, as if it weren't there yet.
+ */
 export async function writeHerdr(
-  io: Pick<Io, 'env' | 'home' | 'run'>,
+  io: Pick<Io, 'env' | 'home' | 'run' | 'host' | 'now'>,
   report: HerdrReport,
   pane?: HerdrPane | null,
 ): Promise<HerdrOutcome> {
   const target = pane === undefined ? await herdrTarget(io) : pane
   if (!target) return 'off'
-  return runHerdr(io, target, reportArgs(target.pane, report))
+  if (report.cards === undefined) return runHerdr(io, target, reportArgs(target.pane, report))
+  await savePane(io, target.pane, report)
+  const held = await readHeld(io, io.now()).catch(() => new Set<string>())
+  return runHerdr(
+    io,
+    target,
+    reportArgs(target.pane, { ...report, cards: notHeld(report.cards, held) }),
+  )
 }
 
 /** Takes Pending You's tokens and labels off this process's pane. Never throws. */
 export async function clearHerdr(
-  io: Pick<Io, 'env' | 'home' | 'run'>,
+  io: Pick<Io, 'env' | 'home' | 'run' | 'host'>,
   at: number,
   pane?: HerdrPane | null,
 ): Promise<HerdrOutcome> {
   const target = pane === undefined ? await herdrTarget(io) : pane
   if (!target) return 'off'
+  await forgetPane(io, target.pane)
   return runHerdr(io, target, clearArgs(target.pane, at))
 }
 

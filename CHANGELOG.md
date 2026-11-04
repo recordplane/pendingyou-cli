@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.41.0 (2026-11-03)
+
+- Pending You for Herdr holds a card while you're in its agent's pane. When the agent in the Herdr pane you're in also
+  asks you something there, Pending You keeps its card out of sight while you stay: answer it in the pane and it never
+  shows; leave the pane, go 5 minutes without a sign of you in Herdr, or let 30 minutes pass, and it shows as a new
+  card. The watcher tells Pending You which pane you're in and your last sign of you there: moving between panes, tabs
+  and workspaces, keys in the popup, and each message you send the agent in that pane (its app's next-message hook
+  notes the moment, never the words). Herdr can't tell anyone about keys typed in a pane, so those don't count.
+- A held card stays off the pane's badges, so off the sidebar's row, the popup, `next` and the toasts, and comes back
+  the moment it shows. Each badge write keeps its pane's cards (the titles the badges already carry) in
+  `~/.config/pendingyou/herdr/` so the watcher can write them again.
+- It needs Herdr signed in again (`npx pendingyou app login herdr`, or setup's "Sign Herdr in again now?"): a sign-in
+  from before doesn't hold the new `presence:focus`. Setup and doctor say so. With a Pending You that doesn't hold cards
+  yet, the watcher is told no and asks again 10 minutes later; nothing else changes.
+
 ## 0.40.0 (2026-10-28)
 
 - Pending You for Herdr answers "Ask Maple again?": when one of your agents asks to send its card to another of your
