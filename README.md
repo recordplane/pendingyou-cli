@@ -103,8 +103,10 @@ call that ran (a card when Codex waits for your OK, [below](#when-claude-code-wa
 `status` finds Pending You's hooks not trusted yet, it prints the one command that opens a Codex here (`codex`, or
 the one the ChatGPT app brings, by its full path) and says to type `/hooks` there and trust them; at a terminal it
 then waits (every 3 seconds, for up to 10 minutes; Ctrl-C stops it) until Codex trusts them, and says whether Codex is
-ready. It never trusts them for you. `status` says which are trusted. Upgrading from 0.14.0 adds three hooks, which Codex
-skips until you trust them once; `init` says so, and the ones you trusted stay trusted. A `pendingyou` server or
+ready. It never trusts them for you. `status` says which are trusted. Upgrading from 0.14.0 adds three hooks, and
+from 0.41.0 or earlier one more (0.42.0: whoami, list_pending and get_request, so a question you hand a thread that only
+said its name wakes it), which Codex skips until you trust them once; `init` says so, and the ones you trusted stay
+trusted. A `pendingyou` server or
 hooks Codex's `/import` copied from Claude Code (without its sign-in) are replaced.
 
 **The Codex app** (on a Mac, in the ChatGPT app) shares all of this with Codex CLI: the same `~/.codex`, server, hooks
@@ -507,9 +509,12 @@ answers, once the 5-second window to undo is over:
   know; if not, hand_back with what you checked.” Among sessions by one name, the one working in the task's folder
   takes it (as `list_pending` gives it, `~/…` or a full path), one in another folder never does, and one that can't
   tell its folder waits half a minute (5 minutes before 0.35.0).
-- **Codex**: one listener for the app queues it into the thread it's for (`codex queue`, the same words).
+- **Codex**: one listener for the app queues it into the thread it's for (`codex queue`, the same words), for 12 hours
+  after the thread last used Pending You's card tools or (0.42.0) said its name with `whoami`, `list_pending` or
+  `get_request`. That last needs a hook of its own (PostToolUse on those three), which Codex runs once you trust it in
+  `/hooks`: `npx pendingyou@latest init` adds it and says so, and `status`'s "Handed questions" line says how it stands.
 - **OpenCode and Pi**: the session's listener starts the turn through the plugin or extension; a session that used
-  Pending You's card tools keeps listening for 12 hours, while the app is open.
+  Pending You's card tools or (0.42.0) said its name keeps listening for 12 hours, while the app is open.
 - **Otherwise**: a session start or your next message in that folder brings it, with your note: at once in the
   session that goes by the task's name, after 5 minutes in any other.
 

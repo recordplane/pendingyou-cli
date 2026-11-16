@@ -34,8 +34,11 @@ export type Command =
   | { name: 'pickup'; origin: string; app?: AppId }
   | { name: 'handoff'; origin: string; app?: AppId }
   | { name: 'stopcheck'; origin: string; app?: AppId }
-  /** Codex's PostToolUse hook (0.11.0): remembers the cards a turn posted, and starts the thread's listener. */
-  | { name: 'posted'; origin: string; app?: AppId }
+  /**
+   * Codex's PostToolUse hook (0.11.0): remembers the cards a turn posted, and starts the thread's listener. `named`
+   * (0.42.0) is its second, for whoami, list_pending and get_request: the thread's name and folder only.
+   */
+  | { name: 'posted' | 'named'; origin: string; app?: AppId }
   /**
    * Claude Code's permission-prompt hooks (0.13.0, permission.ts): `permission` is PermissionRequest's,
    * `permission-done` PostToolUse's, PostToolUseFailure's and SessionEnd's, and `notify` Notification's (0.16.0).
@@ -278,6 +281,7 @@ const COMMANDS = new Set([
   'refresh',
   'mcp-headers',
   'posted',
+  'named',
   'listen',
   'mcp',
   'permission',
@@ -313,6 +317,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   handoff: { origin: true, app: true },
   stopcheck: { origin: true, app: true },
   posted: { origin: true, app: true },
+  named: { origin: true, app: true },
   listen: { origin: true, app: true, thread: true, handed: false, since: true },
   permission: { origin: true, app: true },
   'permission-done': { origin: true, app: true },
@@ -417,6 +422,7 @@ export const HOOK_COMMANDS: ReadonlySet<string> = new Set([
   'handoff',
   'stopcheck',
   'posted',
+  'named',
   'permission',
   'permission-done',
   'notify',
@@ -569,10 +575,11 @@ export function parseArgs(
     case 'stopcheck':
       none()
       return { name: 'stopcheck', origin, ...app() }
-    // Not in USAGE: Codex's PostToolUse hook (apps/codex-wake.ts).
+    // Not in USAGE: Codex's PostToolUse hooks (apps/codex-wake.ts): the card tools', and (0.42.0) a name said.
     case 'posted':
+    case 'named':
       none()
-      return { name: 'posted', origin, ...app() }
+      return { name: first, origin, ...app() }
     // Not in USAGE: what `posted` starts in the background, one per Codex thread, and OpenCode's plugin and Pi's
     // extension one per session (apps/codex-wake.ts).
     case 'listen': {

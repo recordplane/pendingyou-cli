@@ -17,6 +17,9 @@
 //   that used Pending You's card tools keeps its listener for 12 hours after (each message starts it again while
 //   `<config>/opencode-threads.json` says so), and the listener also wakes it for a question the person handed it from
 //   another assistant (D21); `answer_delegated` and `hand_back` count among the card tools, with the session's folder.
+//   Since 0.42.0 a session that said its name without a card (`pendingyou_whoami`, `_list_pending` or `_get_request`
+//   with a `name`) is told to `posted` too, which knows it by that name and folder (never as a card of its own, nor the
+//   turn's), and keeps its listener the same way: a question handed to it wakes it.
 // - a session going idle (`session.status` idle): the Stop check on its last turn (`stopcheck`), which asks it to go on
 //   once a turn at most, never for a turn the plugin started to ask, one the person stopped, or a subagent's session;
 //   the plugin starts that turn and shows a toast saying why.
@@ -121,7 +124,15 @@ const TEXT_CHARS = 100_000
  */
 const CARD_TOOL =
   /^[A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*_(post_request|post_answer|update_request|reply_in_thread|cancel_request|answer_delegated|hand_back)$/i
-/** How long a session that used the card tools may be handed a question: the command line's HANDED_FOR_MS. */
+/**
+ * The calls by which a session says its name without a card (0.42.0): `posted` knows it by that name and folder, for a
+ * question the person may hand it. Only with a `name`.
+ */
+const NAMED_TOOL = /^[A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*_(whoami|list_pending|get_request)$/i
+/**
+ * How long a session that used Pending You (the card tools; 0.42.0, a call with its name) may be handed a question: the
+ * command line's HANDED_FOR_MS.
+ */
 export const HANDED_FOR_MS = 12 * 60 * 60_000
 /** What the toast says when the Stop check asks a session to go on. */
 const NUDGED = 'Asked OpenCode to put what it needs from you on a card.'
@@ -150,7 +161,8 @@ function configFolder(): string {
 
 /**
  * Whether the hooks' record of a session (`<app>-threads.json`, codex-wake.ts) says it's worth a listener: cards waiting,
- * or a name it went by on the card tools within HANDED_FOR_MS. False for anything it can't read.
+ * or a name it went by on the card tools (0.42.0: or said with whoami, list_pending, get_request) within HANDED_FOR_MS.
+ * False for anything it can't read.
  */
 export function wantsListener(file: unknown, session: string, now = Date.now()): boolean {
   const threads = isObject(file) && isObject(file.threads) ? file.threads : {}
@@ -595,7 +607,10 @@ export async function pendingYou(input: PluginInput, deps: Deps): Promise<Hooks>
 
     async 'tool.execute.after'(input, output) {
       try {
-        if (!CARD_TOOL.test(input.tool)) return
+        // A call that says its name (0.42.0): only with one, since that's what a question is handed to.
+        const named = NAMED_TOOL.test(input.tool)
+        if (named && !(isObject(input.args) && typeof input.args.name === 'string')) return
+        if (!named && !CARD_TOOL.test(input.tool)) return
         const session = await known(input.sessionID)
         // A subagent's card wakes the session it works for.
         const id = session.parent ?? input.sessionID

@@ -31,8 +31,9 @@ import {
 } from './format.ts'
 
 /**
- * How long a session that used Pending You's card tools stays listening for a question handed to it: as long as Pending
- * You offers its task to the person as running (12 hours since it was last seen).
+ * How long a session that used Pending You stays listening for a question handed to it: as long as Pending You offers
+ * its task to the person as running (12 hours since it was last seen). Using it is a card tool, or (0.42.0) whoami,
+ * list_pending or get_request with its name.
  */
 export const HANDED_FOR_MS = 12 * 60 * 60_000
 /**
@@ -48,7 +49,7 @@ const NAME_CHARS = 60
 export interface Candidate {
   /** Its id: Codex's thread, an OpenCode or Pi session. */
   thread: string
-  /** The names it went by on Pending You's card tools. */
+  /** The names it went by on Pending You's card tools, or said with whoami, list_pending or get_request (0.42.0). */
   names: readonly string[]
   /** Its folder, as its hooks gave it. */
   cwd?: string

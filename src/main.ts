@@ -58,7 +58,9 @@ async function run(io: Io, command: Command, hook: HookRun = { fallback: '' }): 
       )
     case 'stopcheck':
       return stopcheck(io, { origin: command.origin, app: command.app ?? DEFAULT_APP })
+    // Codex's two PostToolUse hooks: the card tools', and (0.42.0) whoami, list_pending and get_request's.
     case 'posted':
+    case 'named':
       return posted(io, { origin: command.origin, app: command.app ?? DEFAULT_APP })
     case 'permission':
     case 'permission-done':
@@ -192,7 +194,7 @@ async function runHook(io: Io, command: Command): Promise<number> {
 }
 
 /**
- * Whether these arguments run an agent's hook (pickup, handoff, stopcheck or posted). A hook must never get in the way
+ * Whether these arguments run an agent's hook (pickup, handoff, stopcheck, posted or named). A hook must never get in the way
  * of the person: Claude Code blocks their message when a UserPromptSubmit hook exits 2 and flags any other failure, so
  * a hook exits 0 whatever goes wrong, with at most a short note on stderr (which the agent doesn't add to the
  * conversation).

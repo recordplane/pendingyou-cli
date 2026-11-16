@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.42.0 (2026-11-16)
+
+- Fixed: a Codex thread that had only said its name to Pending You (`whoami`, then read its queue) was never woken for a
+  question you handed it from another assistant. Only a card call made a thread known on your computer, so the question
+  waited for the next session start or message in its folder. Now a thread that calls `whoami`, `list_pending` or
+  `get_request` with its name is known by that name and folder, as one that posted a card is, and a question handed to
+  it is queued into it for the next 12 hours. Such a call is never a card: the check at the end of the turn doesn't count
+  it as one posted, and it makes no card the thread's own.
+- Codex: it comes from a new hook, PostToolUse on those three tools, added last so every hook you trusted stays trusted.
+  Codex skips it until you trust it in `/hooks`: `npx pendingyou@latest init` adds it, says "Codex has new Pending You
+  hooks (questions handed to a thread)" and waits for you there, and `status` has a "Handed questions" line saying how
+  it stands. The card hook is unchanged, so answers to a thread's own cards wake it as before meanwhile.
+- OpenCode and Pi had the same gap: the plugin and the extension now hand those three calls to the command line too,
+  when they carry a name. Run `npx pendingyou@latest init` there, then restart OpenCode or `/reload` Pi.
+- Claude Code never had it: its wake mod learns the session's name from any Pending You call, `whoami` included.
+
 ## 0.41.0 (2026-11-03)
 
 - Pending You for Herdr holds a card while you're in its agent's pane. When the agent in the Herdr pane you're in also

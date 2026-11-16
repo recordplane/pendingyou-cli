@@ -22,6 +22,10 @@
 //   the person's OK (permission.ts; `--no-permission-cards` leaves them out), and SessionEnd (presence: the thread
 //   closed; presence.ts), whose timeout is 3 seconds, the most Codex gives a SessionEnd hook. New hooks need trusting
 //   once: init's last lines and status say so.
+// - Since 0.42.0 one more, at the end of PostToolUse's list: `named`, matched to whoami, list_pending and get_request,
+//   so a thread that said its name to Pending You without posting a card is woken for a question handed to it
+//   (codex-wake.ts). A hook of its own rather than a wider matcher on the card hook: a changed definition is skipped
+//   until trusted again, and the card hook's stays as the person trusted it; only the new one waits for /hooks.
 // - Trusting them (0.22.0, trust.ts): the one way seen working is Codex's own /hooks (a Mac, 2026-10-06, with the
 //   Codex CLI the ChatGPT app brings). When init or status finds our hooks installed and not trusted, it prints the
 //   command that opens a Codex here (codex on PATH, else the app's: codex-app.ts) and "type /hooks", then waits for the
@@ -134,6 +138,11 @@ const CARD_TOOLS =
   '^mcp__pendingyou__(post_request|post_answer|update_request|reply_in_thread|cancel_request)$'
 /** How Codex names post_answer to its hooks: the tool the Stop check needs the PostToolUse hook to see (0.36.0). */
 const POST_ANSWER = 'mcp__pendingyou__post_answer'
+/**
+ * The Pending You tools by which a thread says its name without a card (0.42.0): the `named` hook (codex-wake.ts)
+ * knows the thread by it, so a question handed to it wakes it.
+ */
+const NAMED_TOOLS = '^mcp__pendingyou__(whoami|list_pending|get_request)$'
 
 /** Codex's hooks, by event: the command each runs, and its matcher. */
 export const CODEX_HOOKS: readonly HookSpec[] = [
@@ -162,11 +171,19 @@ export const codexPermissionHooks = (wait: number): HookSpec[] =>
 export const CODEX_PRESENCE_HOOKS: readonly HookSpec[] = [
   { event: 'SessionEnd', sub: 'presence', timeout: 3 },
 ]
+/**
+ * A thread that said its name (0.42.0): whoami, list_pending or get_request, with any sign-in. Last in the list, so on a
+ * computer set up before it lands where a fresh init puts it, and every hook before it keeps its trust.
+ */
+export const CODEX_NAMED_HOOKS: readonly HookSpec[] = [
+  { event: 'PostToolUse', sub: 'named', matcher: NAMED_TOOLS },
+]
 /** Every hook init may add to Codex, in the order they're added. */
 export const ALL_CODEX_HOOKS: readonly HookSpec[] = [
   ...CODEX_HOOKS,
   ...CODEX_PERMISSION_HOOKS,
   ...CODEX_PRESENCE_HOOKS,
+  ...CODEX_NAMED_HOOKS,
 ]
 /** Each event as Codex names it in a hook's trust key. */
 const EVENT_LABELS: Record<string, string> = {
@@ -482,6 +499,10 @@ function keepTheirTrust(config: string, file: string, before: Json): string {
   return next
 }
 
+/** Some words as a list: “a”, “a and b”, “a, b and c”. */
+const listed = (words: readonly string[]) =>
+  words.length > 1 ? `${words.slice(0, -1).join(', ')} and ${words.at(-1)}` : (words[0] ?? '')
+
 /** What init says of the wait (0.34.0): what it does, and the command that sets it. */
 export function answerWaitWords(wait: number): string {
   return wait > 0
@@ -720,6 +741,7 @@ export const codex: AppModule = {
           ...CODEX_HOOKS,
           ...(extra && cards ? codexPermissionHooks(wait) : []),
           ...(extra ? CODEX_PRESENCE_HOOKS : []),
+          ...CODEX_NAMED_HOOKS,
         ]
         const wantedKeys = new Set(wanted.map(lineKey))
         const unwanted = ALL_CODEX_HOOKS.filter((spec) => !wantedKeys.has(lineKey(spec)))
@@ -746,16 +768,19 @@ export const codex: AppModule = {
               (spec) => !CODEX_HOOKS.includes(spec) && !(lineKey(spec) in (before?.hooks ?? {})),
             )
             if (before && merged.changed && fresh.length)
-              newHooks = [
+              newHooks = listed([
                 ...(fresh.some((spec) => spec.sub === 'presence') ? ['session end'] : []),
                 ...(fresh.some((spec) => spec.sub.startsWith('permission'))
                   ? ['permission prompts']
                   : []),
-              ].join(' and ')
+                ...(fresh.some((spec) => spec.sub === 'named')
+                  ? ['questions handed to a thread']
+                  : []),
+              ])
             report({
               ok: true,
               text: merged.changed
-                ? `Installed or updated Codex’s session-start pickup, next-message hand-off, card and Stop check hooks${extra ? `, ${cards ? 'its permission-prompt hooks (a card when Codex waits for your OK; --no-permission-cards leaves them out) ' : ''}and its session-end hook (Pending You hears when a thread is open)` : ''} in ${file.path}. Codex runs them once you trust them (how: below).`
+                ? `Installed or updated Codex’s session-start pickup, next-message hand-off, card, name and Stop check hooks${extra ? `, ${cards ? 'its permission-prompt hooks (a card when Codex waits for your OK; --no-permission-cards leaves them out) ' : ''}and its session-end hook (Pending You hears when a thread is open)` : ''} in ${file.path}. Codex runs them once you trust them (how: below).`
                 : removed.changed
                   ? `Took out Codex’s permission-prompt hooks, as you asked: no card when Codex waits for your OK. To turn them on: npx pendingyou init --app codex --permission-cards${originArgs(ictx.origin)}`
                   : 'Codex’s hooks were already installed.',
@@ -972,6 +997,13 @@ export const codex: AppModule = {
       CODEX_PRESENCE_HOOKS.map((spec) => spec.sub),
       ownConnection ? null : notOwn,
     )
+    // A thread that only said its name (0.42.0): woken for a question handed to it once its hook is trusted.
+    const namedText = extraLine(
+      'Handed questions:',
+      'a question you hand a thread that said its name to Pending You wakes it',
+      CODEX_NAMED_HOOKS.map((spec) => spec.sub),
+      null,
+    )
     const wakes = detected
       ? atLeast(detected.version, detected.command ? CODEX_APP_WAKE : CODEX_WAKE)
       : false
@@ -994,6 +1026,7 @@ export const codex: AppModule = {
       permissionText,
       ...(askFirst ? [askFirst] : []),
       presenceText,
+      namedText,
       `  ${mark(wakes)} Wake: ${
         wakes
           ? detected?.command

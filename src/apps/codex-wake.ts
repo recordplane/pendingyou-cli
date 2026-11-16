@@ -38,6 +38,14 @@
 // Reply on one as the Claude Code wake mod does ("your person replied to your answer …"), and Herdr's badges leave
 // answers out, since an answer asks the person nothing.
 //
+// Since 0.42.0 a session that said its name to Pending You (whoami, list_pending or get_request with a `name`) is known
+// as one that posted a card is: its names and folder, so a question the person hands it wakes it, for HANDED_FOR_MS.
+// Before, one that had only called whoami and read its queue was never woken for a question handed to it (2026-11-16):
+// it waited for the next session start or message in its folder. Such a call is never a card: it isn't the turn's (the
+// Stop check's "posted a card"), and makes no card the session's own. Codex runs it from a second PostToolUse hook,
+// `pendingyou named --app codex`, matched to those three tools (codex.ts), so the card hook's trusted definition stays
+// as it was; OpenCode's plugin and Pi's extension hand them to `posted` as they do the card tools.
+//
 // Ids, names, folders, titles and pane ids only, in ~/.config/pendingyou/<app>-threads.json: never an answer or a note.
 
 import { randomBytes } from 'node:crypto'
@@ -113,9 +121,12 @@ interface Thread {
    * it, as an answer does, and one read or settled leaves as any card does.
    */
   cards: Record<string, ThreadCard>
-  /** When it last used Pending You's card tools, or (0.14.0) heard from the person. */
+  /** When it last used Pending You (its card tools; 0.42.0, a call with its name), or (0.14.0) heard from the person. */
   at: number
-  /** The names it went by on Pending You's card tools, newest last (0.14.0): a question handed to one is its. */
+  /**
+   * The names it went by on Pending You's card tools (0.42.0: and whoami, list_pending, get_request), newest last
+   * (0.14.0): a question handed to one is its.
+   */
   names?: string[]
   /** Its folder, as its hooks gave it (0.14.0). */
   cwd?: string
@@ -132,7 +143,7 @@ interface Thread {
 interface ThreadState {
   version: 1
   /**
-   * Each thread with cards still in front of the person, or (0.14.0) that used the card tools in the last
+   * Each thread with cards still in front of the person, or (0.14.0) that used Pending You under a name in the last
    * HANDED_FOR_MS, by thread id.
    */
   threads: Record<string, Thread>
@@ -187,10 +198,27 @@ const CARD_TOOLS: Partial<Record<AppId, RegExp>> = {
 }
 /** The calls that answer a question handed to the session (D21): never a card of its own. */
 const HELPER_CALLS = new Set(['answer_delegated', 'hand_back'])
+/**
+ * The calls by which a session says its name to Pending You without a card (0.42.0): whoami, list_pending and
+ * get_request, each with a `name`. Codex and Pi name them `mcp__pendingyou__whoami`, OpenCode `pendingyou_whoami`.
+ */
+const MCP_NAMED_TOOL =
+  /^mcp__([A-Za-z0-9_]*pendingyou[A-Za-z0-9_]*)__(whoami|list_pending|get_request)$/i
+const NAMED_TOOLS: Partial<Record<AppId, RegExp>> = {
+  codex: MCP_NAMED_TOOL,
+  opencode: /^([A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*)_(whoami|list_pending|get_request)$/i,
+  pi: MCP_NAMED_TOOL,
+}
 
 /** The card tool a call was, for an app whose hooks read them; null for any other tool. */
 export function cardTool(app: AppId, name: unknown): string | null {
   const pattern = CARD_TOOLS[app]
+  return pattern && typeof name === 'string' ? (pattern.exec(name)?.[2] ?? null) : null
+}
+
+/** The call a session says its name with (0.42.0: whoami, list_pending, get_request); null for any other tool. */
+export function namedTool(app: AppId, name: unknown): string | null {
+  const pattern = NAMED_TOOLS[app]
   return pattern && typeof name === 'string' ? (pattern.exec(name)?.[2] ?? null) : null
 }
 
@@ -244,7 +272,8 @@ async function load(io: Pick<Io, 'env' | 'home'>, app: AppId): Promise<ThreadSta
 
 /**
  * Whether a thread with no card waiting may still be handed a question (0.14.0): it went by a name on the card tools
- * within HANDED_FOR_MS, while Pending You offers its task to the person.
+ * (0.42.0: or said it with whoami, list_pending or get_request) within HANDED_FOR_MS, while Pending You offers its task
+ * to the person.
  */
 const mayBeHanded = (thread: Thread, now: number) =>
   Boolean(thread.names?.length) && now - thread.at < HANDED_FOR_MS
@@ -326,17 +355,21 @@ function withName(thread: Thread, name: string | undefined): Thread {
  * thread has a listener; OpenCode's plugin starts its own. Since 0.14.0 also the names it goes by and its folder, for a
  * question the person may hand it; `answer_delegated` and `hand_back` count for the turn, and the card stays the
  * asker's. Since 0.17.0, in a Herdr pane, the thread is that pane's and its card's urgency is kept, and the pane's
- * badges are written again in the background (herdr.ts). Prints nothing (Codex ignores it anyway); never fails.
+ * badges are written again in the background (herdr.ts). Since 0.42.0 also a call that says the session's name
+ * (whoami, list_pending, get_request; Codex's `named` hook): the name and folder only, never the turn's or a card.
+ * Prints nothing (Codex ignores it anyway); never fails.
  */
 export async function posted(io: Io, options: { origin: string; app: AppId }): Promise<number> {
   const { app } = options
   try {
     const input = JSON.parse(await io.readStdin(1000)) as Json
     if (!isObject(input)) return 0
-    const call = cardTool(app, input.tool_name)
     const thread = typeof input.session_id === 'string' ? input.session_id : null
+    if (!thread) return 0
+    if (namedTool(app, input.tool_name)) return await named(io, options, input, thread)
+    const call = cardTool(app, input.tool_name)
     const turn = typeof input.turn_id === 'string' ? input.turn_id : null
-    if (!call || !thread) return 0
+    if (!call) return 0
     const args = isObject(input.tool_input) ? input.tool_input : {}
     const output = resultOf(input.tool_response)
     const requestId = [output?.requestId, args.requestId].find(
@@ -396,6 +429,42 @@ export async function posted(io: Io, options: { origin: string; app: AppId }): P
   } catch {
     return 0
   }
+}
+
+/**
+ * A call that says the session's name (0.42.0: whoami, list_pending, get_request with a `name`), one that didn't fail:
+ * the thread is known by that name in its folder, as one that posted a card is, so a question the person hands it
+ * wakes it for HANDED_FOR_MS (Codex: its one listener for those is started). Never the turn's (the Stop check counts
+ * cards only) and never a card of its own.
+ */
+async function named(
+  io: Io,
+  options: { origin: string; app: AppId },
+  input: Json,
+  thread: string,
+): Promise<number> {
+  const { app } = options
+  if (!THREAD.test(thread)) return 0
+  if (isObject(input.tool_response) && input.tool_response.isError === true) return 0
+  const name = nameOf(isObject(input.tool_input) ? input.tool_input : {})
+  if (!name) return 0
+  const cwd = text(input.cwd, 1000)
+  const now = io.now()
+  const pane = await herdrTarget(io)
+  await change(io, app, (state) => {
+    const known = withName(
+      state.threads[thread] ?? { origin: options.origin, cards: {}, at: now },
+      name,
+    )
+    if (cwd) known.cwd = cwd
+    if (pane) known.herdr = pane.pane
+    known.origin = options.origin
+    known.at = now
+    state.threads[thread] = known
+  })
+  if (pane) io.background(reportCommand(app, { session: thread, at: now }))
+  if (app === 'codex') await keepListening(io, options.origin, thread)
+  return 0
 }
 
 /** Whether a post_request was also asked in the conversation (its askedFirst, an object or the same as JSON text). */
@@ -469,7 +538,7 @@ export async function reportThreads(
 
 /**
  * A session start or a message in a thread the hooks know (0.14.0): it's active now, in this folder. One the hooks
- * don't know (it never used the card tools) stays unknown. Never throws.
+ * don't know (it never used the card tools, nor said its name: 0.42.0) stays unknown. Never throws.
  */
 export async function touchThread(
   io: Pick<Io, 'env' | 'home' | 'now' | 'sleep'>,
@@ -489,7 +558,10 @@ export async function touchThread(
   } catch {}
 }
 
-/** The names a thread went by on the card tools (0.14.0), newest last; none for a thread the hooks don't know. */
+/**
+ * The names a thread went by on the card tools (0.14.0; 0.42.0, or said with whoami, list_pending, get_request), newest
+ * last; none for a thread the hooks don't know.
+ */
 export async function threadNames(
   io: Pick<Io, 'env' | 'home'>,
   app: AppId,

@@ -26,6 +26,9 @@
 //   and runs while the session may be handed one: 12 hours after it last used the card tools, as `pi-threads.json`
 //   says. `answer_delegated` and `hand_back` count among the card tools, and a run that such a question started says so
 //   to the Stop check (`handed`), which then asks it to answer or hand back, never to post a card of its own.
+// - Since 0.42.0 a session that said its name without a card (whoami, list_pending or get_request with a `name`) is told
+//   to `posted` too, which knows it by that name and folder (never as a card of its own, nor the run's), and its
+//   listener runs the same 12 hours: a question handed to it wakes it.
 //
 // - Presence (0.15.0, presence.ts): a session that starts says it's live, every 5 minutes after while Pi runs, and
 //   closed on `session_shutdown`, through `presence --state …`, started detached so Pi never waits on it.
@@ -102,7 +105,16 @@ const STOP_MS = 2000
  */
 export const CARD_TOOL =
   /^mcp__[A-Za-z0-9_]*pendingyou[A-Za-z0-9_]*__(post_request|post_answer|update_request|reply_in_thread|cancel_request|answer_delegated|hand_back)$/i
-/** How long a session that used the card tools may be handed a question: the command line's HANDED_FOR_MS. */
+/**
+ * The calls by which a session says its name without a card (0.42.0): `posted` knows it by that name and folder, for a
+ * question the person may hand it. Only with a `name`.
+ */
+export const NAMED_TOOL =
+  /^mcp__[A-Za-z0-9_]*pendingyou[A-Za-z0-9_]*__(whoami|list_pending|get_request)$/i
+/**
+ * How long a session that used Pending You (the card tools; 0.42.0, a call with its name) may be handed a question: the
+ * command line's HANDED_FOR_MS.
+ */
 export const HANDED_FOR_MS = 12 * 60 * 60_000
 /** How a wake for a question the person handed the session starts: the command line's HANDED_PREFIX. */
 export const HANDED_PREFIX = 'Pending You: your person handed you'
@@ -205,7 +217,8 @@ export function startedHanded(messages: unknown, wakes: ReadonlySet<string>): bo
 
 /**
  * Whether `pi-threads.json` says a session is worth a listener: cards waiting, or (0.14.0) a name it went by on the
- * card tools within HANDED_FOR_MS. False for anything it can't read.
+ * card tools (0.42.0: or said with whoami, list_pending, get_request) within HANDED_FOR_MS. False for anything it can't
+ * read.
  */
 export function wantsListener(file: unknown, session: string, now = Date.now()): boolean {
   const threads = isObject(file) && isObject(file.threads) ? file.threads : {}
@@ -508,12 +521,15 @@ export function pendingYou(setup: PiSetup, options: ExtensionOptions = {}) {
         structuredContent?: unknown
         isError?: unknown
       }) => {
-        if (event.isError === true || typeof event.toolName !== 'string') return
-        if (!CARD_TOOL.test(event.toolName) || !session) return
-        turn ??= `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+        if (event.isError === true || typeof event.toolName !== 'string' || !session) return
+        // A call that says its name (0.42.0): only with one, and never the run's (no turn: the Stop check counts cards).
+        const named = NAMED_TOOL.test(event.toolName)
+        if (named && !(isObject(event.input) && typeof event.input.name === 'string')) return
+        if (!named && !CARD_TOOL.test(event.toolName)) return
+        if (!named) turn ??= `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
         const input = {
           session_id: session,
-          turn_id: turn,
+          ...(named ? {} : { turn_id: turn }),
           cwd,
           tool_name: event.toolName,
           tool_input: clipped(event.input ?? {}),
