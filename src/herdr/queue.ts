@@ -16,7 +16,14 @@
 import { appClient, readAppSignIn } from '../app-login.ts'
 import { herdrServer } from '../herdr.ts'
 import type { Io } from '../io.ts'
-import { ApiError, type Assistant, type Card, type Client, SignedOutError } from '../sdk/index.ts'
+import {
+  ApiError,
+  type Assistant,
+  type Card,
+  type CardList,
+  type Client,
+  SignedOutError,
+} from '../sdk/index.ts'
 import {
   askerOf,
   emptyQueue,
@@ -70,6 +77,21 @@ export function failureWords(error: unknown): string {
       return `Pending You didn’t take that: ${error.message}`
     default:
       return error.message || `Pending You couldn’t do that (${error.code}).`
+  }
+}
+
+/**
+ * The popup's cards: a question an assistant put to you on a card it still has (its helper's: the card stays delegated,
+ * 0.43.0) first, as Pending You puts it on top of your stack, then the cards waiting on you. Counted with them.
+ */
+export function queueCards(
+  pending: CardList,
+  delegated: CardList,
+): { cards: Card[]; counts: CardList['counts'] } {
+  const asked = delegated.cards.filter((card) => card.ask && !card.ask.answered)
+  return {
+    cards: [...asked, ...pending.cards.filter((card) => !asked.some((one) => one.id === card.id))],
+    counts: { ...pending.counts, pending: pending.counts.pending + asked.length },
   }
 }
 
@@ -294,9 +316,13 @@ export async function queuePopup(
     }
     if (!client || ended) return
     try {
-      const page = await client.cards.list({ status: 'pending', limit: 50, whole: 0 })
+      const [page, handed] = await Promise.all([
+        client.cards.list({ status: 'pending', limit: 50, whole: 0 }),
+        client.cards.list({ status: 'delegated', limit: 50, whole: 0 }),
+      ])
       const keep = state.cards[state.selected]?.id
-      let cards = page.cards
+      const listed = queueCards(page, handed)
+      let cards = listed.cards
       const sent = state.sent
       if (sent && io.now() < sent.until && !cards.some((card) => card.id === sent.cardId)) {
         const held = state.cards.find((card) => card.id === sent.cardId)
@@ -307,7 +333,7 @@ export async function queuePopup(
       state = {
         ...state,
         cards,
-        counts: page.counts,
+        counts: listed.counts,
         selected: at >= 0 ? at : Math.max(0, Math.min(state.selected, cards.length - 1)),
         ...(moved
           ? { screen: { kind: 'list' as const }, chosen: [], answers: {}, question: 0 }
@@ -419,7 +445,14 @@ export async function queuePopup(
           const done = await client.cards.answer(effect.card.id, effect.answer)
           state = sentState(
             state,
-            { cardId: effect.card.id, what, words: effect.words, until: done.undoUntil },
+            {
+              cardId: effect.card.id,
+              what,
+              words: effect.words,
+              until: done.undoUntil,
+              // An answer to the card's question is undone by that question's id.
+              ...(effect.answer.askId ? { askId: effect.answer.askId } : {}),
+            },
             io.now(),
           )
         } catch (error) {
@@ -435,7 +468,9 @@ export async function queuePopup(
         }
         try {
           const { cardId, what } = effect.sent
-          if (what === 'answer' || what === 'not_sent') await client.cards.undo(cardId)
+          const { askId } = effect.sent
+          if (what === 'answer' || what === 'not_sent')
+            await client.cards.undo(cardId, askId ? { askId } : {})
           else if (what === 'later') await client.cards.back(cardId)
           else await client.cards.takeBack(cardId)
           state = { ...state, sent: null, note: 'Undone: it’s waiting on you again.' }

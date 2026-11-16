@@ -21,6 +21,12 @@
 // to Maple where and how Pending You says: `sendTo.to`, in `sendTo.mode`), and n, no (`notSent`); never "from now on",
 // which is the person's in Pending You. A teammate's, "Send this to Doug?", is answered in Pending You: o opens it.
 //
+// A question an assistant put to you on a card still open (its `ask`; 0.43.0, docs/plans/2026-11-16-helper-resume.md §7):
+// its helper's, on a card you handed it, which stays with it, or its own assistant's. It's answered, not the card: its
+// options by 1–9, its words by Enter, and a helper's to-do ("Maple needs you to: …", `ask.action`) by y, Done, or n,
+// "I can't" with your words if you have any. u takes the answer back by the question's id. One that's high stakes, or
+// carries a draft (Pending You offers no `answer` then), is answered in Pending You.
+//
 // High stakes are never answered here: a card that spends money, can't be undone or goes public (its own flag, its
 // approval's risk, or any of its questions') takes no key but o, t and moving. Pending You refuses an app's answer to one
 // anyway (403 high_stakes); the popup never sends one. What a card allows this sign-in (`actions`) is Pending You's to
@@ -56,8 +62,11 @@ export type Screen =
   | { kind: 'list' }
   | {
       kind: 'write'
-      /** answer: a text card's answer; reply: words to the asker; failed: what happened at a step; question: a group's. */
-      purpose: 'answer' | 'reply' | 'failed' | 'question'
+      /**
+       * answer: a text card's answer; reply: words to the asker; failed: what happened at a step; question: a group's;
+       * ask: your words to an assistant's question on the card; cant: why you can't do a helper's to-do.
+       */
+      purpose: 'answer' | 'reply' | 'failed' | 'question' | 'ask' | 'cant'
       text: string
       step?: number
       questionId?: string
@@ -76,6 +85,8 @@ export interface Sent {
   words: string
   /** Until when it can be undone (milliseconds). */
   until: number
+  /** An answer to the card's question (its `ask.id`): undone by that id. */
+  askId?: string
 }
 
 export interface QueueState {
@@ -151,6 +162,13 @@ export const sendToOf = (card: Card): SendTo | null =>
 
 /** It asks one of your own assistants again, "Ask Maple again?": y and n answer it here. */
 const asksAgain = (sendTo: SendTo) => sendTo.kind === 'assistant'
+
+/** The question an assistant put to you on the card, while it waits on your answer: null for any other card. */
+export const openAskOf = (card: Card): NonNullable<Card['ask']> | null =>
+  card.ask && !card.ask.answered ? card.ask : null
+
+/** Any other key on a helper's to-do. */
+const TODO_KEYS = 'y: done; n: I can’t.'
 
 /** A card to send a teammate (or anyone this popup doesn't know yet): answered in Pending You. */
 export const toTeammate = (card: Card) =>
@@ -305,8 +323,53 @@ function listKey(state: QueueState, key: string, now: number): [QueueState, Queu
   }
   const sendTo = sendToOf(card)
   if (sendTo) return sendToKey(state, card, sendTo, key)
+  const ask = openAskOf(card)
+  if (ask) return askKey(state, card, ask, key)
   if (!answersHere(card)) return [{ ...state, note: NOT_HERE }, NONE]
   return answerKey(state, card, key)
+}
+
+/**
+ * A key on a card with an assistant's question open: it answers the question, by its id, never the card. A helper's
+ * to-do: y Done, n "I can't" (your words, if any, then Enter). Options: 1–9. Words: Enter writes them.
+ */
+function askKey(
+  state: QueueState,
+  card: Card,
+  ask: NonNullable<Card['ask']>,
+  key: string,
+): [QueueState, QueueEffect] {
+  if (ask.highStakes) return [{ ...state, note: HIGH_STAKES }, NONE]
+  if (!card.actions.includes('answer')) return [{ ...state, note: NOT_HERE }, NONE]
+  const send = (
+    answer: Omit<AnswerRequest, 'version' | 'askId'>,
+    words: string,
+  ): [QueueState, QueueEffect] => [
+    { ...state, note: '' },
+    { kind: 'answer', card, answer: { version: card.version, askId: ask.id, ...answer }, words },
+  ]
+  const enter = key === '\r' || key === '\n'
+  if (ask.action) {
+    if (key === 'y' || enter) return send({ done: true }, 'Done')
+    if (key === 'n')
+      return [{ ...state, screen: { kind: 'write', purpose: 'cant', text: '' }, note: '' }, NONE]
+    return [{ ...state, note: TODO_KEYS }, NONE]
+  }
+  if (ask.options?.length) {
+    const n = digit(key)
+    const option = n ? ask.options[n - 1] : undefined
+    if (option) return send({ choiceIds: [option.id] }, option.label)
+    return [
+      {
+        ...state,
+        note: `Press 1–${Math.min(KEYS_MAX, ask.options.length)} to answer ${ask.name}.`,
+      },
+      NONE,
+    ]
+  }
+  if (enter)
+    return [{ ...state, screen: { kind: 'write', purpose: 'ask', text: '' }, note: '' }, NONE]
+  return [{ ...state, note: 'Enter writes your answer.' }, NONE]
 }
 
 /**
@@ -538,8 +601,33 @@ function writeKey(
     return [{ ...state, screen: { ...screen, text: [...screen.text].slice(0, -1).join('') } }, NONE]
   if (key === '\r' || key === '\n') {
     const text = screen.text.trim()
+    const ask = openAskOf(card)
+    // "I can't" goes with or without your words: they help the helper, but aren't needed.
+    if (screen.purpose === 'cant' && ask)
+      return [
+        { ...state, screen: { kind: 'list' }, note: '' },
+        {
+          kind: 'answer',
+          card,
+          answer: { version: card.version, askId: ask.id, done: false, ...(text ? { text } : {}) },
+          words: text ? `Couldn’t: ${text}` : 'Couldn’t',
+        },
+      ]
     if (!text) return [{ ...state, note: 'Write something first, or Esc to go back.' }, NONE]
     switch (screen.purpose) {
+      case 'cant':
+        return said(state, '')
+      case 'ask':
+        if (!ask) return said(state, '')
+        return [
+          { ...state, screen: { kind: 'list' }, note: '' },
+          {
+            kind: 'answer',
+            card,
+            answer: { version: card.version, askId: ask.id, text },
+            words: text,
+          },
+        ]
       case 'reply':
         return [
           { ...state, screen: { kind: 'list' }, note: '' },
@@ -677,7 +765,13 @@ export function sentState(
       : (sent.until ?? now + UNDO_MS)
   return {
     ...fresh(state),
-    sent: { cardId: sent.cardId, what: sent.what, words: sent.words, until },
+    sent: {
+      cardId: sent.cardId,
+      what: sent.what,
+      words: sent.words,
+      until,
+      ...(sent.askId ? { askId: sent.askId } : {}),
+    },
     note: '',
   }
 }
@@ -722,6 +816,9 @@ export function fromNow(at: string, now: number): string {
 function tagOf(card: Card, state: QueueState, now: number): string {
   if (state.sent?.cardId === card.id && now < state.sent.until) return 'sent'
   if (card.highStakes) return 'high stakes'
+  // An assistant's question for you on it (its helper's, on a card it still has).
+  const ask = openAskOf(card)
+  if (ask) return ask.action ? `${ask.name} needs you` : `${ask.name} asks`
   if (card.turn === 'agent') return 'their turn'
   return card.blocking ? 'blocking' : card.urgency
 }
@@ -845,6 +942,57 @@ function askLines(card: Card, state: QueueState, room: number, now: number): str
   return lines
 }
 
+/** "Maple’s", "Juno’s", "James’". */
+const possessive = (name: string) => (/s$/i.test(name) ? `${name}’` : `${name}’s`)
+
+/**
+ * An assistant's question for you on the card, in the card's place: who asks, what, and how it's answered. A helper's
+ * to-do ("Maple needs you to:") shows its steps, where and how you'll know it worked; a question its options; and a
+ * helper's says whose card it's on, whom the answer goes to, and that it picked the card back up, when it did.
+ */
+function askedLines(card: Card, ask: NonNullable<Card['ask']>, room: number): string[] {
+  const fit = (text: string) => cleanValue(text, room)
+  const helper = ask.from === 'helper'
+  const lines = [
+    BOLD(
+      fit(
+        ask.action
+          ? `${ask.name} needs you to:`
+          : helper
+            ? `${ask.name} asks:`
+            : `${ask.name} has a question for you first:`,
+      ),
+    ),
+    BOLD(fit(ask.title)),
+    ...(ask.summary ? wrap(ask.summary, room, 3) : []),
+    ...(ask.why ? wrap(ask.why, room, 3) : []),
+  ]
+  if (ask.action) {
+    for (const [index, step] of ask.action.steps.entries()) {
+      const each = typeof step === 'string' ? { text: step } : step
+      lines.push(fit(`${index + 1}. ${each.text}`))
+      if (each.command) lines.push(fit(`   $ ${each.command}`))
+    }
+    if (ask.action.where) lines.push(DIM(fit(`Where: ${ask.action.where}`)))
+    if (ask.action.done) lines.push(...wrap(`You’ll know it worked: ${ask.action.done}`, room, 2))
+  }
+  for (const [index, option] of (ask.options ?? []).slice(0, KEYS_MAX).entries()) {
+    const star = ask.recommendedIds?.includes(option.id) ? '★ ' : ''
+    lines.push(
+      fit(`${index + 1} ${star}${option.label}${option.detail ? ` · ${option.detail}` : ''}`),
+    )
+  }
+  if (helper) {
+    lines.push(DIM(fit(`${askerName(card)} asked: ${card.title}`)))
+    if (card.delegation?.resumes?.length)
+      lines.push(DIM(fit(`${ask.name} handed it back, then picked it back up.`)))
+    lines.push(...wrap(`Your answer goes to ${ask.name}.`, room, 2))
+  }
+  if (ask.highStakes) lines.push(...wrap(HIGH_STAKES, room, 2))
+  else if (!card.actions.includes('answer')) lines.push(...wrap(NOT_HERE, room, 2))
+  return lines
+}
+
 /**
  * What a card waiting to be sent asks of you. "Ask Maple again?": what Maple helped with before, and where its answer
  * would go (the web's words: "Maple helped with “…” on Sep 26. Maple’s answer goes straight to Wren."), and when Herdr
@@ -855,10 +1003,14 @@ function sendToLines(card: Card, sendTo: SendTo, room: number): string[] {
   const name = sendTo.name
   const helped = sendTo.helped
   const on = helped && dayOf(helped.at) ? ` on ${dayOf(helped.at)}` : ''
+  // The other way round (0.43.0; introductions go both ways): the card that introduced them was this assistant's own.
+  const theirs = Boolean(helped?.theirs && !helped.answered)
   const before = helped
     ? helped.answered
       ? `${name} helped with “${helped.title}”${on}.`
-      : `You handed ${name} “${helped.title}”${on}.`
+      : theirs
+        ? `${askerName(card)} worked on ${possessive(name)} “${helped.title}”${on}.`
+        : `You handed ${name} “${helped.title}”${on}.`
     : null
   const goes =
     sendTo.mode === 'freely'
@@ -866,11 +1018,19 @@ function sendToLines(card: Card, sendTo: SendTo, room: number): string[] {
       : `${name}’s answer comes back to you first.`
   const yesHere = Boolean(sendTo.to) && card.actions.includes('delegate')
   return [
-    BOLD(cleanValue(`Ask ${name} again?`, room)),
+    BOLD(cleanValue(theirs ? `Ask ${name}?` : `Ask ${name} again?`, room)),
     ...(before ? wrap(before, room, 2) : []),
     ...wrap(goes, room, 2),
     ...(yesHere || card.highStakes ? [] : wrap(SAY_YES_THERE, room, 2)),
   ]
+}
+
+/** The keys that answer an assistant's question on the card, as this sign-in may: none on a high-stakes one. */
+function askKeys(card: Card, ask: NonNullable<Card['ask']>): string[] {
+  if (ask.highStakes || !card.actions.includes('answer')) return []
+  if (ask.action) return ['y done', 'n I can’t']
+  if (ask.options?.length) return [`1–${Math.min(KEYS_MAX, ask.options.length)} answer`]
+  return ['Enter write']
 }
 
 /** The keys that answer a card waiting to be sent: y and n on "Ask Maple again?", as this sign-in may; none else. */
@@ -952,7 +1112,9 @@ export function keysLine(state: QueueState, now: number): string {
     const busy = state.sent?.cardId === card.id && now < state.sent.until
     if (!card.highStakes && !busy) {
       const sendTo = sendToOf(card)
+      const ask = openAskOf(card)
       if (sendTo) keys.push(...sendToKeys(card, sendTo))
+      else if (ask) keys.push(...askKeys(card, ask))
       else if (answersHere(card)) keys.push(...answerKeys(card, state))
       if (card.actions.includes('reply')) keys.push('r reply')
       if (card.actions.includes('later')) keys.push('l later')
@@ -1001,9 +1163,11 @@ export function queueLines(
         ? `To ${askerName(card)}: `
         : screen.purpose === 'failed'
           ? `What happened at step ${screen.step ?? 1}? `
-          : screen.purpose === 'question'
-            ? 'Your answer: '
-            : 'Your answer: '
+          : screen.purpose === 'cant'
+            ? 'I can’t, because (or just Enter): '
+            : screen.purpose === 'ask'
+              ? `To ${openAskOf(card)?.name ?? askerName(card)}: `
+              : 'Your answer: '
     // The end of what's typed, so the cursor's always in sight.
     const typed = [...screen.text]
     const shown = typed.slice(Math.max(0, typed.length - (room - label.length - 1))).join('')
@@ -1045,8 +1209,10 @@ export function queueLines(
     const first = `${chosen ? '▸ ' : '  '}${title}${gap}${tag}`
     if (!chosen) return [first]
     const pane = state.panes[each.id]
+    const ask = openAskOf(each)
     const where = [
-      askerOf(each),
+      // A helper's question: whose card, and who has it.
+      ask?.from === 'helper' ? `${askerOf(each)} → ${ask.name}` : askerOf(each),
       each.area.name,
       ...(each.asker.machine && each.asker.machine.name !== state.machine
         ? [each.asker.machine.name]
@@ -1057,8 +1223,11 @@ export function queueLines(
     return [
       INVERSE(first),
       `    ${DIM(fit(where, inner))}`,
-      ...wrap(each.summary, inner, 3).map((line) => `    ${line}`),
-      ...askLines(each, state, inner, now).map((line) => `    ${line}`),
+      // An assistant's question takes the card's place: it's what waits on you.
+      ...(ask
+        ? askedLines(each, ask, inner)
+        : [...wrap(each.summary, inner, 3), ...askLines(each, state, inner, now)]
+      ).map((line) => `    ${line}`),
     ]
   })
   // Two lines kept for "↑ 3 more" and "↓ 2 more".

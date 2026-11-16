@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.43.0 (2026-11-16)
+
+- Pending You for Herdr shows an assistant's question on a card it still has, and answers it. When a card you handed
+  to one of your assistants needs something from you, it's in the popup with the rest, first: "Maple needs you to:"
+  and the steps, for a helper's to-do (y Done, n "I can't", with your words if you have any), or "Maple asks:" and its
+  options or a box for your words. Your answer goes to the question, not the card, which stays with the helper; u takes
+  it back for 5 seconds. A question that's high stakes, or carries a draft to send in your name, is answered in Pending
+  You (o opens it).
+- "Ask Maple?": introductions go both ways now, so an assistant may ask the one whose card it worked on. The popup says
+  "Ask Maple?" for that, and "Wren worked on Maple’s “…”", until Maple has helped it; then "Ask Maple again?" as before.
+- A card its helper handed back and then picked back up says so in the popup.
+- Run `npx pendingyou@latest init`; nothing to restart but Herdr's popup, which picks it up the next time it opens.
+
 ## 0.42.0 (2026-11-16)
 
 - Fixed: a Codex thread that had only said its name to Pending You (`whoami`, then read its queue) was never woken for a

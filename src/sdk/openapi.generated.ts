@@ -181,6 +181,12 @@ export type Card = {
       since: string
       until: string
     }
+    resumes?: {
+      at: string
+      handedBackAt: string
+      found?: string
+      reason?: "blocked" | "needs_person" | "not_mine" | (string & {})
+    }[]
   }
   ask?: {
     id: string
@@ -212,10 +218,22 @@ export type Card = {
       lang?: "ts" | "json" | "shell" | "sql" | "yaml" | "toml" | "css" | "markdown" | "text" | (string & {})
       startLine?: number
     }[]
+    action?: {
+      where?: string
+      steps: (string | {
+        id?: string
+        text: string
+        command?: string
+      })[]
+      done?: string
+      command?: string
+      verify?: string
+    }
     highStakes: boolean
     at: string
     answered?: {
       choiceIds?: string[]
+      done?: boolean
       text?: string
       note?: string
       answeredAt: string
@@ -373,6 +391,7 @@ export type SendTo = {
     title: string
     at: string
     answered: boolean
+    theirs?: true
   }
 }
 
@@ -936,13 +955,16 @@ export type AnswerRequest = {
     }
   }
   failedStep?: number
+  done?: boolean
   askId?: string
   handled?: "self" | "leave"
   notSent?: true
   holdSeconds?: number
 }
 
-export type UndoRequest = Record<string, never>
+export type UndoRequest = {
+  askId?: string
+}
 
 export type MessageRequest = {
   body: string

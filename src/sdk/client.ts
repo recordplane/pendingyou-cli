@@ -94,8 +94,11 @@ export interface Client {
       answer: AnswerRequest,
       options?: { idempotencyKey?: string },
     ): Promise<AnswerResponse>
-    /** Take this app's answer back in its 5 seconds (cards:answer). */
-    undo(id: string, options?: { idempotencyKey?: string }): Promise<CardBack>
+    /**
+     * Take this app's answer back in its 5 seconds (cards:answer). `askId`: its answer to the card's question (an ask,
+     * a helper's to-do among them), not to the card.
+     */
+    undo(id: string, options?: { idempotencyKey?: string; askId?: string }): Promise<CardBack>
     /** Words to the assistant that asked (cards:reply). */
     reply(
       id: string,
@@ -370,7 +373,10 @@ export function createClient(options: ClientOptions): Client {
           ...keyed(opts?.idempotencyKey),
         }),
       undo: (id, opts) =>
-        request<CardBack>('POST', path(id, 'undo'), { body: {}, ...keyed(opts?.idempotencyKey) }),
+        request<CardBack>('POST', path(id, 'undo'), {
+          body: opts?.askId ? { askId: opts.askId } : {},
+          ...keyed(opts?.idempotencyKey),
+        }),
       reply: (id, message, opts) =>
         request<MessageResponse>('POST', path(id, 'messages'), {
           body: typeof message === 'string' ? { body: message } : message,
