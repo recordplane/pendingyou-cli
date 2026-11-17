@@ -57,7 +57,9 @@
 // when it fails, and the reminder line is as it was; a Pending You wake isn't a message of theirs, so it reads nothing.
 // Codex's next-message hook also records whether the person's message asked the agent something (never the words),
 // for the Stop check's ask for the answer on a card too (stopcheck.ts).
+
 import { getJson, postJson, SignInNeeded, Unavailable } from './api.ts'
+import { turnBegan } from './apps/codex-midturn.ts'
 import {
   computerNames,
   hearsOnly,
@@ -461,6 +463,9 @@ export async function pickup(
       else if (app === 'codex' && mode === 'handoff' && input.turn && asksQuestion(input.prompt))
         await markAskedTurn(io, input.turn, app).catch(() => {})
     }
+    // A Codex turn begins (0.43.3): an answer while it runs is told at its next tool call (apps/codex-midturn.ts).
+    if (app === 'codex' && mode === 'handoff' && input.session)
+      await turnBegan(io, input.session, input.turn ?? null)
     // A Codex thread whose cards still wait on the person is woken when they answer (apps/codex-wake.ts), and one that
     // may be handed a question when it is.
     if (app === 'codex' && input.session) await keepListening(io, origin, input.session)

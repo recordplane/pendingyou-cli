@@ -1,7 +1,9 @@
 // The command line: parse the arguments, run the command, return the exit code. `cli.ts` runs it for real; tests run
 // it with their own Io.
+
 import { HOOK_DEADLINE_MS, refreshInBackground, SignInNeeded, Unavailable } from './api.ts'
 import { setAnswerWait } from './apps/codex.ts'
+import { heardHook } from './apps/codex-midturn.ts'
 import { listen, listenHanded, posted } from './apps/codex-wake.ts'
 import { DEFAULT_APP } from './apps/ids.ts'
 import { appModule } from './apps/registry.ts'
@@ -62,6 +64,9 @@ async function run(io: Io, command: Command, hook: HookRun = { fallback: '' }): 
     case 'posted':
     case 'named':
       return posted(io, { origin: command.origin, app: command.app ?? DEFAULT_APP })
+    // Codex's PostToolUse on every call (0.43.3) where the permission hooks aren't installed: told mid-task.
+    case 'heard':
+      return heardHook(io)
     case 'permission':
     case 'permission-done':
     case 'notify': {

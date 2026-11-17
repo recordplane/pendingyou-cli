@@ -56,8 +56,10 @@
 import { open } from 'node:fs/promises'
 import { getJson } from './api.ts'
 import { codexSeesAnswers } from './apps/codex.ts'
+import { hasHeard, turnEnded } from './apps/codex-midturn.ts'
 import { markNudged, turnRecord } from './apps/codex-wake.ts'
 import { APP_NAMES, type AppId, DEFAULT_APP } from './apps/ids.ts'
+import { DEFAULT_ORIGIN } from './args.ts'
 import { asksQuestion, wordsOf } from './asked.ts'
 import { asksToTypeHere, cardFits, confirmReason, sessionLink } from './confirm.ts'
 import { readCredential } from './credentials.ts'
@@ -695,6 +697,28 @@ export async function stopcheck(io: Io, options: { origin: string; app?: AppId }
         event: 'stop',
         subagents: subagentsRunning(input),
       })
+    // A Codex turn ends (0.43.3): what waited for it, told mid-task or not but not read, is queued now, in the
+    // background (a listener of its own, which only queues it if another holds the thread), so Stop isn't held up.
+    if (
+      app === 'codex' &&
+      typeof input.session_id === 'string' &&
+      input.stop_hook_active !== true
+    ) {
+      await turnEnded(
+        io,
+        input.session_id,
+        typeof input.turn_id === 'string' ? input.turn_id : null,
+      )
+      if (await hasHeard(io, input.session_id))
+        io.background([
+          'listen',
+          '--app',
+          'codex',
+          '--thread',
+          input.session_id,
+          ...(options.origin === DEFAULT_ORIGIN ? [] : ['--origin', options.origin]),
+        ])
+    }
     if (input.stop_hook_active === true) return 0
     if (!(await readCredential(io, options.origin, app))) return 0
     const turn = await turnOf(io, input, app)

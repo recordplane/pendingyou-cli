@@ -94,9 +94,20 @@ import {
 } from '../herdr.ts'
 import type { Io } from '../io.ts'
 import { linkSoon } from '../link.ts'
+import type { MidTurnItem } from '../midturn.ts'
 import { macName, tailscaleName } from '../remote.ts'
 import { claimHanded, markHanded, momentOf, releaseHanded, wasHanded } from '../state.ts'
 import { findCodex } from './codex-app.ts'
+import {
+  hasHeard,
+  heardRead,
+  holdHeard,
+  midTurn,
+  queuedWakes,
+  STALE_WAKE,
+  takeHeard,
+  type Waiting,
+} from './codex-midturn.ts'
 import { APP_IDS, type AppId } from './ids.ts'
 
 type Json = Record<string, unknown>
@@ -466,7 +477,11 @@ async function named(
   const { app } = options
   if (!THREAD.test(thread)) return 0
   if (isObject(input.tool_response) && input.tool_response.isError === true) return 0
-  const name = nameOf(isObject(input.tool_input) ? input.tool_input : {})
+  const args = isObject(input.tool_input) ? input.tool_input : {}
+  // It read a card itself (0.43.3): nothing left to tell it of mid-task.
+  if (app === 'codex' && namedTool(app, input.tool_name) === 'get_request')
+    if (typeof args.requestId === 'string') await heardRead(io, thread, args.requestId)
+  const name = nameOf(args)
   if (!name) return 0
   const cwd = text(input.cwd, 1000)
   const now = io.now()
@@ -804,7 +819,8 @@ export async function keepListening(io: Io, origin: string, thread: string): Pro
     if (!THREAD.test(thread)) return
     const { threads } = await load(io, 'codex')
     const now = io.now()
-    const own = Object.keys(threads[thread]?.cards ?? {}).length > 0
+    // Cards waiting, or (0.43.3) a wake held for it through a turn: its listener queues it once the turn is over.
+    const own = Object.keys(threads[thread]?.cards ?? {}).length > 0 || (await hasHeard(io, thread))
     const handed = Object.values(threads).some((each) => mayBeHanded(each, now))
     if (!own && !handed) return
     if (!(await readCredential(io, origin, 'codex'))) return
@@ -959,12 +975,35 @@ function byCodexQueue(io: Io, thread: string): Deliver {
   let program: Promise<string> | null = null
   return async (message) => {
     program ??= findCodex(io).then((found) => found?.command ?? 'codex')
+    // A queued wake can't be taken back (0.43.3): one the thread already acted on costs only a turn's start.
     const queued = await io.run(
       await program,
-      ['queue', '--thread', thread, '--message', message],
+      ['queue', '--thread', thread, '--message', `${message}${STALE_WAKE}`],
       30_000,
     )
     return queued.code === 0
+  }
+}
+
+/** What a wake says of one card, for the line a thread is told mid-task (0.43.3, codex-midturn.ts). */
+function midItemOf(heard: Heard, card: ThreadCard): MidTurnItem {
+  const kind: MidTurnItem['kind'] = noticeOf(heard)
+    ? 'word'
+    : card.kind === 'answer'
+      ? 'replied'
+      : heard.status === 'expired'
+        ? 'fallback'
+        : heard.status === 'cancelled'
+          ? 'withdrawn'
+          : heard.status === 'answered'
+            ? 'answered'
+            : 'wrote'
+  const name = card.name ?? heard.sessionLabel
+  return {
+    kind,
+    title: card.title ?? heard.title,
+    requestId: heard.requestId,
+    ...(name ? { name } : {}),
   }
 }
 
@@ -1076,6 +1115,13 @@ export async function listen(
   options: { origin: string; app: AppId; thread: string },
 ): Promise<number> {
   const { origin, app, thread } = options
+  // A wake held through a turn that's over (0.43.3) goes now, even when another listener holds the thread (the Stop
+  // hook starts one for this alone): the file's lock gives it to one.
+  if (app === 'codex' && !(await midTurn(io, thread))) {
+    const wakes = await takeHeard(io, thread)
+    const send = byCodexQueue(io, thread)
+    for (const message of queuedWakes(wakes)) await send(message, [])
+  }
   const lease = await takeLease(io, app, thread)
   if (!lease) return 0
   // This computer's sign-ins linked to it by its key, every few hours, in the background (0.29.0, link.ts).
@@ -1094,9 +1140,18 @@ export async function listen(
     let since: string | undefined
     let failures = 0
     while (io.now() - started < LISTEN_MS && !signal.aborted) {
+      // Told mid-task (0.43.3): what waited through a turn that's over is queued now, as any wake.
+      if (app === 'codex' && !(await midTurn(io, thread))) {
+        const wakes = await takeHeard(io, thread)
+        for (const message of queuedWakes(wakes)) await deliver(message, [])
+      }
+      const waiting = app === 'codex' && (await hasHeard(io, thread))
       const record = (await load(io, app)).threads[thread]
       const cards = record?.cards ?? {}
-      if (!record || (Object.keys(cards).length === 0 && !(takes && mayBeHanded(record, io.now()))))
+      if (
+        !waiting &&
+        (!record || (Object.keys(cards).length === 0 && !(takes && mayBeHanded(record, io.now()))))
+      )
         return 0
       if (!(await renew(io, app, thread, lease))) return 0
       const query = new URLSearchParams({
@@ -1147,7 +1202,22 @@ export async function listen(
       }
       const message = wakeMessage(ready)
       if (message) {
-        if (
+        // In the middle of a turn (0.43.3): left for its next tool call, which says it in one line, and queued only
+        // if the turn ends first.
+        if (app === 'codex' && (await midTurn(io, thread)))
+          await holdHeard(
+            io,
+            thread,
+            ready.map(
+              (each): Waiting => ({
+                requestId: each.heard.requestId,
+                moment: momentOf(each.heard),
+                item: midItemOf(each.heard, each.card),
+                wake: wakeMessage([each]) ?? message,
+              }),
+            ),
+          )
+        else if (
           !(await deliver(
             message,
             ready.map(({ heard }) => heard.requestId),
@@ -1223,9 +1293,10 @@ export async function listenHanded(
   let program: Promise<string> | null = null
   const queue = async (thread: string, message: string) => {
     program ??= findCodex(io).then((found) => found?.command ?? 'codex')
+    // A queued wake can't be taken back (0.43.3): one the thread already acted on costs only a turn's start.
     const queued = await io.run(
       await program,
-      ['queue', '--thread', thread, '--message', message],
+      ['queue', '--thread', thread, '--message', `${message}${STALE_WAKE}`],
       30_000,
     )
     return queued.code === 0
@@ -1237,8 +1308,14 @@ export async function listenHanded(
     let failures = 0
     while (io.now() - started < LISTEN_MS && !signal.aborted) {
       const now = io.now()
-      if (!Object.values((await load(io, app)).threads).some((each) => mayBeHanded(each, now)))
-        return 0
+      const { threads } = await load(io, app)
+      // Told mid-task (0.43.3): what waited through a turn that's over is queued now, as any wake.
+      for (const thread of Object.keys(threads))
+        if (!(await midTurn(io, thread))) {
+          const wakes = await takeHeard(io, thread)
+          for (const message of queuedWakes(wakes)) await queue(thread, message)
+        }
+      if (!Object.values(threads).some((each) => mayBeHanded(each, now))) return 0
       if (!(await renew(io, app, HANDED, lease))) return 0
       const query = new URLSearchParams({
         source: app,
@@ -1287,6 +1364,27 @@ export async function listenHanded(
           list.map(({ card }) => card),
           { words: false },
         )
+        // In the middle of a turn (0.43.3): left for its next tool call, and queued only if the turn ends first.
+        if (message && (await midTurn(io, thread))) {
+          await holdHeard(
+            io,
+            thread,
+            list.map(
+              ({ heard, card }): Waiting => ({
+                requestId: heard.requestId,
+                moment: momentOf(heard),
+                item: {
+                  kind: card.said ? 'handed-reply' : 'handed',
+                  title: card.title,
+                  requestId: card.requestId,
+                  name: card.name,
+                },
+                wake: handedMessage([card], { words: false }) ?? message,
+              }),
+            ),
+          )
+          continue
+        }
         if (message && (await queue(thread, message))) continue
         // Codex doesn't know the thread (archived, gone): its questions go back, and it's left out from now on.
         await giveBack(io, origin, list)

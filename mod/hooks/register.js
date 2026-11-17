@@ -1,7 +1,7 @@
 // Generated from packages/claude-plugin/src/wake/register.ts in recordplane/pendingyou: edit that, then run
 // `pnpm --filter @pendingyou/claude-plugin generate`.
 
-import { argumentsOf, BOOK_TOUCH_MS, blockedNote, CLAIM_PREFIX, CLAIM_RENEW_MS, CLI_COPY, cardTool, checkArgs, checked, claimedElsewhere, claimHeld, claimLapsesAt, claimLease, cliConfigOf, connectionOf, dueCards, emptyBook, failed, folderOf, graceAfter, graceEnds, HANDED_FAST_MS, HANDED_FOR_MS, HANDED_READS, HERDR_EVERY_MS, HERDR_RUN_MS, handedDue, handedNext, handedOf, handedText, handedView, herdrArgv, herdrPayload, holdOf, holdReply, inHerdr, isFresh, isRefusal, isStale, isWaitingOnYou, KEEP_MS, keepsBook, LISTEN_RUN_MS, LISTENER_KEY, learn, leaseFor, leaseHolder, listenArgv, listened, loadedNote, loadedPath, mayListen, momentOf, nameKept, newerElsewhere, originOf, PRESENCE_EVERY_MS, PRESENCE_RUN_MS, presenceArgv, presenceNameOf, prompted, put, readBook, readClaim, readListener, readSetup, readSignal, readSince, readWait, resultObject, retellDue, SETUP_AFTER_MS, SETUP_RETRY_MS, SETUP_SERVER, SETUP_TRIES, SIGNAL_KEY, settle, setUpOf, setupNeeded, setupPrompt, stateOf, statusText, TICK_MS, takesHanded, told, toTell, untold, used, wakeText, wordsOf, } from "./wake.js";
+import { argumentsOf, BOOK_TOUCH_MS, blockedNote, CLAIM_PREFIX, CLAIM_RENEW_MS, CLI_COPY, cardTool, checkArgs, checked, claimedElsewhere, claimHeld, claimLapsesAt, claimLease, cliConfigOf, connectionOf, dueCards, emptyBook, failed, folderOf, graceAfter, graceEnds, HANDED_FAST_MS, HANDED_FOR_MS, HANDED_READS, HERDR_EVERY_MS, HERDR_RUN_MS, handedDue, handedNext, handedOf, handedText, handedView, herdrArgv, herdrPayload, holdOf, holdReply, inHerdr, isFresh, isRefusal, isStale, isWaitingOnYou, KEEP_MS, keepsBook, LISTEN_RUN_MS, LISTENER_KEY, learn, leaseFor, leaseHolder, listenArgv, listened, loadedNote, loadedPath, mayListen, midTurnKindOf, midTurnText, momentOf, nameKept, newerElsewhere, originOf, PRESENCE_EVERY_MS, PRESENCE_RUN_MS, presenceArgv, presenceNameOf, prompted, put, readBook, readClaim, readListener, readSetup, readSignal, readSince, readWait, resultObject, retellDue, SETUP_AFTER_MS, SETUP_RETRY_MS, SETUP_SERVER, SETUP_TRIES, SIGNAL_KEY, settle, setUpOf, setupNeeded, setupPrompt, stateOf, statusText, TICK_MS, takesHanded, told, toTell, unreadWake, untold, used, wakeText, wordsOf, } from "./wake.js";
 const UNHEARD = { error: 'unavailable' };
 const RETRY_MS = 60_000;
 const live = {
@@ -22,6 +22,7 @@ const live = {
     setupConnection: 'Claude Code',
     seenAt: 0,
     handedAt: 0,
+    hinted: new Set(),
     held: [],
     heldRenewedAt: 0,
     handedTold: new Map(),
@@ -182,7 +183,10 @@ async function deliver($) {
         return false;
     live.book = told(live.book, cards);
     await save($);
-    $.prompt.submit({ text: wakeText(cards, live.words) }).catch(async () => {
+    const hinted = new Set(cards
+        .filter((card) => card.state && live.hinted.has(`${card.requestId} ${momentOf(card.state)}`))
+        .map((card) => card.requestId));
+    $.prompt.submit({ text: wakeText(cards, live.words, hinted) }).catch(async () => {
         live.book = untold(live.book, cards);
         live.quietUntil = (await $.clock.now()) + RETRY_MS;
         await save($).catch(() => { });
@@ -217,18 +221,31 @@ async function heldHanded($, now) {
     for (const held of holding) {
         if (!claimHeld(await $.store.get(held.key), held.moment, me))
             continue;
+        if (readSince(live.handedTold.get(held.handed.requestId), held.handed.updatedAt)) {
+            await $.store.set(held.key, { moment: held.moment, at: now, by: me });
+            continue;
+        }
         let view = null;
+        let unread = true;
         if (name && server) {
             const args = { requestId: held.handed.requestId, name };
             if (await allowed($, server, args))
                 try {
-                    view = handedView(resultObject(await $.mcp.call(server, 'get_request', args)), held.handed, name);
+                    const output = resultObject(await $.mcp.call(server, 'get_request', args));
+                    if (output) {
+                        unread = false;
+                        view = handedView(output, held.handed, name);
+                    }
                 }
                 catch { }
         }
         if (live.sessionId !== me) {
             await giveBack($, holding, me);
             return;
+        }
+        if (unread) {
+            live.handedTold.delete(held.handed.requestId);
+            live.handedAt = Math.min(live.handedAt, now + RETRY_MS);
         }
         if (!view) {
             if (claimHeld(await $.store.get(held.key), held.moment, me))
@@ -240,7 +257,9 @@ async function heldHanded($, now) {
     }
     if (told.length === 0)
         return;
-    $.prompt.submit({ text: handedText(told.map((each) => each.view)) }).catch(async () => {
+    const words = handedText(told.map((each) => each.view));
+    const unread = told.every((each) => holding.some((held) => held.key === each.key && live.hinted.has(`${held.handed.requestId} ${held.moment}`)));
+    $.prompt.submit({ text: unread ? unreadWake(words) : words }).catch(async () => {
         for (const each of told) {
             await $.store.delete(each.key).catch(() => { });
             live.handedTold.delete(each.view.requestId);
@@ -719,7 +738,60 @@ async function answerHold($, e) {
     const answer = live.book.cards[requestId]?.kind === 'answer';
     return { result: { stdout: holdReply(requestId, answer), stderr: '', interrupted: false } };
 }
+async function tellMidTurn($, e, result) {
+    if (!live.busy || !live.owner || !live.sessionId || e.agentId || result.deny !== undefined)
+        return result;
+    const own = typeof e.requestId === 'string' ? e.requestId : undefined;
+    const said = (requestId, moment) => live.hinted.has(`${requestId} ${moment}`);
+    const cards = toTell(live.book).filter((card) => card.requestId !== own && card.state && !said(card.requestId, momentOf(card.state)));
+    const waiting = live.held.filter((each) => each.handed.requestId !== own &&
+        !said(each.handed.requestId, each.moment) &&
+        !readSince(live.handedTold.get(each.handed.requestId), each.handed.updatedAt));
+    if (cards.length === 0 && waiting.length === 0)
+        return result;
+    const me = live.sessionId;
+    const name = live.book.name;
+    const held = [];
+    for (const each of waiting)
+        if (claimHeld(await $.store.get(each.key), each.moment, me))
+            held.push(each);
+    const items = [
+        ...cards.map((card) => {
+            const named = card.name ?? name;
+            return {
+                kind: midTurnKindOf(card),
+                title: card.title ?? card.requestId,
+                requestId: card.requestId,
+                ...(named ? { name: named } : {}),
+            };
+        }),
+        ...held.map((each) => ({
+            kind: 'handed',
+            title: each.handed.title,
+            requestId: each.handed.requestId,
+            ...(name ? { name } : {}),
+        })),
+    ];
+    const text = midTurnText(items);
+    if (!text)
+        return result;
+    for (const card of cards)
+        if (card.state)
+            live.hinted.add(`${card.requestId} ${momentOf(card.state)}`);
+    for (const each of held)
+        live.hinted.add(`${each.handed.requestId} ${each.moment}`);
+    return { ...result, context: [...(result.context ?? []), text] };
+}
 export function register(on) {
+    on('tool.call', async ($, e, next) => {
+        const result = await next(e);
+        try {
+            return await tellMidTurn($, e, result);
+        }
+        catch {
+            return result;
+        }
+    });
     on('session.start', async ($, e, next) => {
         try {
             await start($, e);
@@ -735,8 +807,10 @@ export function register(on) {
         return next(e);
     });
     on('turn.start', async (_, e, next) => {
-        if (!e.agentId)
+        if (!e.agentId) {
             live.busy = true;
+            live.hinted.clear();
+        }
         return next(e);
     });
     on('turn.complete', async ($, e, next) => {

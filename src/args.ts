@@ -39,6 +39,8 @@ export type Command =
    * (0.42.0) is its second, for whoami, list_pending and get_request: the thread's name and folder only.
    */
   | { name: 'posted' | 'named'; origin: string; app?: AppId }
+  /** Codex's PostToolUse hook on every call (0.43.3), where the permission hooks aren't installed: told mid-task. */
+  | { name: 'heard'; origin: string; app?: AppId }
   /**
    * Claude Code's permission-prompt hooks (0.13.0, permission.ts): `permission` is PermissionRequest's,
    * `permission-done` PostToolUse's, PostToolUseFailure's and SessionEnd's, and `notify` Notification's (0.16.0).
@@ -284,6 +286,7 @@ const COMMANDS = new Set([
   'mcp-headers',
   'posted',
   'named',
+  'heard',
   'listen',
   'mcp',
   'permission',
@@ -320,6 +323,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
   stopcheck: { origin: true, app: true },
   posted: { origin: true, app: true },
   named: { origin: true, app: true },
+  heard: { origin: true, app: true },
   listen: { origin: true, app: true, thread: true, handed: false, since: true },
   permission: { origin: true, app: true },
   'permission-done': { origin: true, app: true },
@@ -426,6 +430,7 @@ export const HOOK_COMMANDS: ReadonlySet<string> = new Set([
   'stopcheck',
   'posted',
   'named',
+  'heard',
   'permission',
   'permission-done',
   'notify',
@@ -581,6 +586,7 @@ export function parseArgs(
     // Not in USAGE: Codex's PostToolUse hooks (apps/codex-wake.ts): the card tools', and (0.42.0) a name said.
     case 'posted':
     case 'named':
+    case 'heard':
       none()
       return { name: first, origin, ...app() }
     // Not in USAGE: what `posted` starts in the background, one per Codex thread, and OpenCode's plugin and Pi's

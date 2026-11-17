@@ -178,12 +178,20 @@ export const CODEX_PRESENCE_HOOKS: readonly HookSpec[] = [
 export const CODEX_NAMED_HOOKS: readonly HookSpec[] = [
   { event: 'PostToolUse', sub: 'named', matcher: NAMED_TOOLS },
 ]
+/**
+ * Told mid-task (0.43.3, codex-midturn.ts): a hook on every tool call, which says an answer that came while the thread
+ * works at its next call. The permission hooks' `permission-done` is that hook already, trusted wherever they're
+ * installed; this one only where they aren't (no connection of its own here, or --no-permission-cards), last in the
+ * list so every hook before it keeps its trust.
+ */
+export const CODEX_HEARD_HOOKS: readonly HookSpec[] = [{ event: 'PostToolUse', sub: 'heard' }]
 /** Every hook init may add to Codex, in the order they're added. */
 export const ALL_CODEX_HOOKS: readonly HookSpec[] = [
   ...CODEX_HOOKS,
   ...CODEX_PERMISSION_HOOKS,
   ...CODEX_PRESENCE_HOOKS,
   ...CODEX_NAMED_HOOKS,
+  ...CODEX_HEARD_HOOKS,
 ]
 /** Each event as Codex names it in a hook's trust key. */
 const EVENT_LABELS: Record<string, string> = {
@@ -742,6 +750,8 @@ export const codex: AppModule = {
           ...(extra && cards ? codexPermissionHooks(wait) : []),
           ...(extra ? CODEX_PRESENCE_HOOKS : []),
           ...CODEX_NAMED_HOOKS,
+          // Told mid-task (0.43.3): permission-done carries it where the permission hooks are; else a hook of its own.
+          ...(extra && cards ? [] : CODEX_HEARD_HOOKS),
         ]
         const wantedKeys = new Set(wanted.map(lineKey))
         const unwanted = ALL_CODEX_HOOKS.filter((spec) => !wantedKeys.has(lineKey(spec)))
@@ -776,14 +786,17 @@ export const codex: AppModule = {
                 ...(fresh.some((spec) => spec.sub === 'named')
                   ? ['questions handed to a thread']
                   : []),
+                ...(fresh.some((spec) => spec.sub === 'heard') ? ['answers while it works'] : []),
               ])
             report({
               ok: true,
-              text: merged.changed
-                ? `Installed or updated Codex’s session-start pickup, next-message hand-off, card, name and Stop check hooks${extra ? `, ${cards ? 'its permission-prompt hooks (a card when Codex waits for your OK; --no-permission-cards leaves them out) ' : ''}and its session-end hook (Pending You hears when a thread is open)` : ''} in ${file.path}. Codex runs them once you trust them (how: below).`
-                : removed.changed
-                  ? `Took out Codex’s permission-prompt hooks, as you asked: no card when Codex waits for your OK. To turn them on: npx pendingyou init --app codex --permission-cards${originArgs(ictx.origin)}`
-                  : 'Codex’s hooks were already installed.',
+              // Turned off as asked (0.43.3: its every-call hook for told mid-task goes in at once): say what went.
+              text:
+                merged.changed && !(removed.changed && !cards)
+                  ? `Installed or updated Codex’s session-start pickup, next-message hand-off, card, name and Stop check hooks${extra ? `, ${cards ? 'its permission-prompt hooks (a card when Codex waits for your OK; --no-permission-cards leaves them out) ' : ''}and its session-end hook (Pending You hears when a thread is open)` : ''} in ${file.path}. Codex runs them once you trust them (how: below).`
+                  : removed.changed
+                    ? `Took out Codex’s permission-prompt hooks, as you asked: no card when Codex waits for your OK. To turn them on: npx pendingyou init --app codex --permission-cards${originArgs(ictx.origin)}`
+                    : 'Codex’s hooks were already installed.',
             })
             // Ask on your phone first (0.34.0, PA7): named once, with the command that sets it.
             if (extra && cards) report({ ok: true, text: answerWaitWords(wait) })
@@ -1004,6 +1017,15 @@ export const codex: AppModule = {
       CODEX_NAMED_HOOKS.map((spec) => spec.sub),
       null,
     )
+    // Told mid-task (0.43.3): through permission-done where the permission hooks are, else its own hook.
+    const midTaskText = extraLine(
+      'Mid-task:',
+      'an answer that comes while a thread works is told at its next tool call',
+      ownConnection && manifest?.permissionCards !== false
+        ? ['permission-done']
+        : CODEX_HEARD_HOOKS.map((spec) => spec.sub),
+      null,
+    )
     const wakes = detected
       ? atLeast(detected.version, detected.command ? CODEX_APP_WAKE : CODEX_WAKE)
       : false
@@ -1027,6 +1049,7 @@ export const codex: AppModule = {
       ...(askFirst ? [askFirst] : []),
       presenceText,
       namedText,
+      midTaskText,
       `  ${mark(wakes)} Wake: ${
         wakes
           ? detected?.command

@@ -88,9 +88,11 @@
 // prints Codex's decision for a tap (allow, or deny with "Denied in Pending You."), then acknowledges the card. With no
 // tap in time it withdraws the card, saying the terminal is asking now, and prints nothing: Codex asks as usual. Its
 // stdout holds that decision and nothing else, ever. A card it can't post leaves the prompt to today's hooks.
+
 import { createHash, randomBytes } from 'node:crypto'
 import { open, readdir, rm, stat } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
+import { tellHeard } from './apps/codex-midturn.ts'
 import { threadNames } from './apps/codex-wake.ts'
 import { APP_NAMES, type AppId } from './apps/ids.ts'
 import { DEFAULT_ORIGIN } from './args.ts'
@@ -922,9 +924,15 @@ export async function permissionHook(
         await asked(io, options.origin, input, app)
         break
       case 'PostToolUse':
-      case 'PostToolUseFailure':
+      case 'PostToolUseFailure': {
         await ran(io, input, app)
+        // Codex (0.43.3): the one hook on every tool call, so it carries the line for a thread told mid-task.
+        if (app === 'codex' && input.hook_event_name === 'PostToolUse') {
+          const told = await tellHeard(io, input)
+          if (told) io.out(told)
+        }
         break
+      }
       case 'Notification':
         // Codex has no Notification hook.
         if (app === CLAUDE) await notified(io, options.origin, input)

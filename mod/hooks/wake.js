@@ -534,7 +534,15 @@ function plainLine(card, get, state) {
     }
 }
 const capital = (sentence) => sentence.charAt(0).toUpperCase() + sentence.slice(1);
-export function wakeText(cards, words) {
+export const UNREAD_NOTE = 'You were told of this while working and haven’t read it.';
+export const unreadWake = (text) => text.includes('\n') ? `${text}\n${UNREAD_NOTE}` : `${text} ${UNREAD_NOTE}`;
+export function wakeText(cards, words, hinted) {
+    const text = wakeWords(cards, words);
+    return hinted && cards.length > 0 && cards.every((card) => hinted.has(card.requestId))
+        ? unreadWake(text)
+        : text;
+}
+function wakeWords(cards, words) {
     const asked = cards.some((card) => card.state?.turn === 'agent' &&
         !isClosed(card.state.status) &&
         card.state.status !== 'delegated' &&
@@ -1124,4 +1132,72 @@ export function herdrArgv(config, session) {
         '--at',
         String(Math.floor(session.at)),
     ];
+}
+export const MID_TURN_TITLE_CHARS = 60;
+export const MID_TURN_SHOWN = 3;
+function midTitle(title) {
+    const flat = title.replace(/\s+/g, ' ').trim().replaceAll('“', '‘').replaceAll('”', '’');
+    const chars = [...flat];
+    return chars.length <= MID_TURN_TITLE_CHARS
+        ? flat
+        : `${chars
+            .slice(0, MID_TURN_TITLE_CHARS - 1)
+            .join('')
+            .trimEnd()}…`;
+}
+function midPhrase(item) {
+    const titled = `“${midTitle(item.title)}” (${item.requestId})`;
+    switch (item.kind) {
+        case 'answered':
+            return `your person answered ${titled}`;
+        case 'wrote':
+            return `your person wrote to you on ${titled}`;
+        case 'replied':
+            return `your person replied to your answer ${titled}`;
+        case 'word':
+            return `there’s word on ${titled}`;
+        case 'fallback':
+            return `nobody answered ${titled} in time, so its fallback is due`;
+        case 'withdrawn':
+            return `${titled} was withdrawn`;
+        case 'handed':
+            return `your person handed you ${titled}`;
+        case 'handed-reply':
+            return `there’s a reply on the question handed to you, ${titled}`;
+    }
+}
+const midRead = (item) => `get_request${item.name ? ` (name “${item.name}”)` : ''}`;
+export function midTurnText(items) {
+    if (items.length === 0)
+        return null;
+    if (items.length === 1) {
+        const item = items[0];
+        if (item.kind === 'withdrawn')
+            return `Pending You, while you were working: ${midPhrase(item)}. Nothing to do.`;
+        return `Pending You, while you were working: ${midPhrase(item)}. Read it now with ${midRead(item)}, and act on it at the next sensible point in this task.`;
+    }
+    const shown = items.slice(0, MID_TURN_SHOWN);
+    const more = items.length - shown.length;
+    return [
+        'Pending You, while you were working:',
+        ...shown.map((item) => item.kind === 'withdrawn'
+            ? `- ${midPhrase(item)}: nothing to do.`
+            : `- ${midPhrase(item)}: ${midRead(item)}.`),
+        ...(more > 0 ? [`- and ${more} more: list_pending with your name.`] : []),
+        'Read each now, and act on them at the next sensible point in this task.',
+    ].join('\n');
+}
+export function midTurnKindOf(card) {
+    const status = card.state?.status;
+    if (card.kind === 'answer')
+        return 'replied';
+    if (status === 'expired')
+        return 'fallback';
+    if (status === 'cancelled')
+        return 'withdrawn';
+    if (status === 'answered')
+        return 'answered';
+    if (status === 'delegated')
+        return 'word';
+    return 'wrote';
 }

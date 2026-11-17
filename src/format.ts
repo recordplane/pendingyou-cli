@@ -153,7 +153,8 @@ export const HANDED_TALK_TODO =
 export function isHandedWake(text: string): boolean {
   const first = text.trimStart().split('\n')[0] ?? ''
   return (
-    first.startsWith(HANDED_PREFIX) ||
+    // The words, then a space (0.43.3): a handover's “your person handed your open cards to …” isn't one.
+    first.startsWith(`${HANDED_PREFIX} `) ||
     (first.startsWith('Pending You: ') && first.includes(` ${HANDED_REPLY}, `))
   )
 }

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.43.3 (2026-11-17)
+
+- An assistant in the middle of a long task when you answer is told at its next tool call, once, in one line, instead
+  of when the task is done: "Pending You, while you were working: your person answered “Ship the webhook retries
+  tonight?” (req_…). Read it now with get_request (name “infra”), and act on it at the next sensible point in this
+  task." The same for a message on one of its cards, a reply on one of its answers, and a question you hand it. Never
+  your answer's own words: it reads it with `get_request`. The line is a hint, said once a turn: only the assistant's
+  own read counts, so one that doesn't read it is woken when its turn ends, as before, the wake ending "You were told
+  of this while working and haven’t read it." (Codex: "You may have been told of this while working, and haven’t read
+  it.", since nothing says Codex showed the line to the model). An idle assistant is woken as before. With nothing waiting, a tool call costs
+  nothing more.
+  - Claude Code: the wake mod adds the line after the next tool result of the session's main conversation (never a
+    subagent's). Nothing to restart: open sessions reload the mod by themselves.
+  - Codex: the hooks keep each thread's turn on disk (begun by your message or its first tool call, kept fresh by each
+    tool call, ended by the Stop hook, and over by itself after 5 minutes with no tool call), and while a turn runs the
+    listener leaves the wake for the next tool call's PostToolUse, which Codex 0.169 runs for calls made inside its code
+    mode too. Whatever it hasn't read when the turn ends is queued at once, from the Stop hook. Where Codex's
+    permission-prompt hooks are installed (the default with this computer's own connection), their every-call hook
+    carries the line, so nothing needs trusting again and no tool call costs more; elsewhere (`--no-permission-cards`,
+    or a sign-in that only hears) `init` adds one hook on every call, a process of its own each time (about a tenth of a
+    second), and says "Codex has new Pending You hooks (answers while it works)": trust it once in `/hooks`. `status`
+    has a "Mid-task" line. Every wake `codex queue` carries now ends "If you already read it with get_request and acted
+    on it, end this turn with no message.", since a queued wake can't be taken back.
+  - Pi: unchanged: a wake still waits for the run under way to end.
+  - OpenCode already took a wake into the turn under way.
+- Fixed: a question Claude Code held through a turn whose read failed as the turn ended is read again shortly, not
+  dropped.
+- Guide 2.61.3 (a wording patch) says that an answer that didn’t work also has `failed` true, and that a to-do answered with `failed` and no step goes back with its fix as one with `failedStep` does; it carries the same mod in the Pending You plugin for Claude.
+- Run `npx pendingyou@latest init`. Restart Codex: its hooks take the new command line at once, but a listener already
+  running keeps the old one.
+
 ## 0.43.2 (2026-11-17)
 
 - Fixed: a Claude Code session Pending You showed as running didn't hear a question you handed its agent. The wake mod
