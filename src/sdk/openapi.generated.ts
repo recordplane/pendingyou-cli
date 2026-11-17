@@ -363,6 +363,7 @@ export type Answer = {
 export type Attachment = {
   id: string
   place: "card" | "message" | "answer" | (string & {})
+  status: "waiting" | "ready" | "failed" | "removed" | (string & {})
   title: string
   contentType?: string
   bytes?: number
