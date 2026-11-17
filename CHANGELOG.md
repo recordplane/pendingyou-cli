@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.43.2 (2026-11-17)
+
+- Fixed: a Claude Code session Pending You showed as running didn't hear a question you handed its agent. The wake mod
+  listened only for 12 hours after the session last used Pending You, and kept its name only in memory when it had no
+  cards of its own, so after 12 quiet hours, or after a restart, `claude --resume`, `/resume`, `/clear` or an upgrade
+  that reloaded the mod, the session heard nothing until you typed to it. Now an open session that has used Pending You
+  under a name hears a question handed to it for as long as it's open: within seconds through the computer's one wait,
+  as before, and on its own timer as the fallback (every minute for the first half hour after it last used Pending
+  You, every 3 minutes up to 12 hours, then every 10 minutes). Its name, and when it last used Pending You, are kept
+  with its cards in the mod's store, so a restart, a resume and a reload keep hearing. A session the mod knows no name
+  for goes by the one its presence last gave Pending You, which is the name Pending You shows running, so sessions open
+  across this upgrade hear too. Of several sessions by one name, the one that used Pending You most recently takes a
+  question handed to it; another takes it only if nobody has after half a minute. A session doesn't tell the same
+  question twice after a reload, and a subagent never renames its session. `/clear` starts a new conversation, which
+  hears from its first call with its name, as before. A branch (`/branch`) is a new task: it neither says nor hears its
+  parent's name until it uses Pending You itself, and Pending You no longer shows it running under that name. Who
+  hears it is otherwise unchanged: the session in the card's folder, one session only, never the one that asked.
+- Codex: of two threads by one name, an open one takes a handed question before a closed one used more recently.
+- Codex, OpenCode and Pi: a session its app says is open (presence) keeps listening for a question handed to it however
+  long it's been quiet, not only for 12 hours, and its listener is started again when it stops (Codex's keeper,
+  OpenCode's plugin and Pi's extension, every 5 minutes). Closed, the 12 hours as before.
+- Fixed: `status` said "Setup: waiting for its first session. Start Claude Code (or restart it)…" beside "Ready" for a
+  sign-in its assistants had been using for days, whose own test question never went all the way round. It now says
+  "Setup: finished. It’s in use, so its unfinished test question no longer matters.", and
+  for a sign-in that reported but has posted nothing, "reported, but its test question isn’t sent yet…". A session of a
+  sign-in in use is no longer told, as it starts, that "setup’s test question isn’t sent yet" (every `init` started
+  those reminders over). Needs Pending You's server from the same release, which says when a sign-in is in use.
+- Fixed: Codex, OpenCode and Pi: when a card came back from the assistant you handed it to, its session heard why, but
+  not your answer after: the listener forgot the card with the notice. It keeps it now, until it's answered.
+- When the session-start or next-message hook can't reach Pending You, its line now says to call `list_pending` with
+  your name.
+- Guide 2.61.2 (a patch: no words change) carries the same mod in the Pending You plugin for Claude.
+- Run `npx pendingyou@latest init`. Claude Code: nothing to restart (open sessions reload the mod by themselves).
+  Codex: restart it, or each thread picks it up once its keeper starts again (its next session start or message after
+  its last one ended). OpenCode and Pi: restart them (Pi: `/reload`), since their plugin points at the version init
+  installed.
+
 ## 0.43.1 (2026-11-16)
 
 - Claude Code: when you answer a card while its session sits idle, the turn that wakes it now carries your answer in

@@ -31,11 +31,18 @@ import {
 } from './format.ts'
 
 /**
- * How long a session that used Pending You stays listening for a question handed to it: as long as Pending You offers
- * its task to the person as running (12 hours since it was last seen). Using it is a card tool, or (0.42.0) whoami,
- * list_pending or get_request with its name.
+ * How long a session that used Pending You stays listening for a question handed to it once its app stops saying it's
+ * open: 12 hours since it was last seen. Using it is a card tool, or (0.42.0) whoami, list_pending or get_request with
+ * its name. While its app says it's open (0.43.2, OPEN_FOR_MS), it listens however long ago that was: Pending You shows
+ * it running then, and a question handed to it was heard only once the person typed to it (2026-11-17).
  */
 export const HANDED_FOR_MS = 12 * 60 * 60_000
+/**
+ * How long after its app last said a session is live (presence: Codex's keeper, OpenCode's plugin, Pi's extension, every
+ * 5 minutes while it's open) it counts as open: Pending You's own window for showing it running (the domain's
+ * LIVE_FOR_MS). A "closed" ends it at once.
+ */
+export const OPEN_FOR_MS = 15 * 60_000
 /**
  * How long a session that goes by another name (or none) leaves a handed question for the one it went to, before it
  * picks it up itself at its next message: the session it's for hears within a minute or two.
@@ -57,6 +64,11 @@ export interface Candidate {
   at: number
   /** Whether it can be woken now (a listener holds it, or `codex queue` reaches it). */
   live: boolean
+  /**
+   * Whether its app says it's open now (0.43.2, presence within OPEN_FOR_MS): an open session is preferred over a
+   * closed one used more recently (Codex's `codex queue` would wait for that one to open again).
+   */
+  open?: boolean
 }
 
 /** A name as Pending You compares them: trimmed, case and inner spacing aside. */
@@ -88,9 +100,14 @@ export function inFolder(session: string | undefined, task: string, home: string
   return here === there || here.startsWith(there === '/' ? '/' : `${there}/`)
 }
 
-/** The most recent of these sessions (the lowest id among equals), or null. */
+/** The most recent of these sessions, an open one first (0.43.2), the lowest id among equals; or null. */
 const latest = (list: readonly Candidate[]) =>
-  [...list].sort((a, b) => b.at - a.at || a.thread.localeCompare(b.thread))[0]?.thread ?? null
+  [...list].sort(
+    (a, b) =>
+      Number(b.open === true) - Number(a.open === true) ||
+      b.at - a.at ||
+      a.thread.localeCompare(b.thread),
+  )[0]?.thread ?? null
 
 /**
  * Which session hears a handed question (the rules above): the id of one that can be woken now, or null when none

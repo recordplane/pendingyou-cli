@@ -132,7 +132,7 @@ export const REMINDER = 'Pending You: anything you need from your person also go
  * refreshed at its deadline. The plain reminder alone hid it, so an answered card went unannounced (2026-10-06).
  */
 export const UNCHECKED =
-  "Pending You couldn't check for answers just now: call list_pending before you go on."
+  "Pending You couldn't check for answers just now: call list_pending with your name before you go on."
 /** The most open cards the line names, and how much of each title. */
 export const OPEN_SHOWN = 3
 export const OPEN_TITLE = 50
@@ -409,6 +409,17 @@ export async function pickup(
         : undefined
     // Presence (0.15.0, presence.ts), started in the background: Claude Code's session start says live (and, for a
     // Claude Code without the wake mod, its messages now and then); a Codex thread gets its keeper.
+    // A branch (0.43.2, Claude Code's /branch): its transcript starts with its parent's conversation, whose name isn't
+    // its own, so names count only from when it branched (presence.ts's Said `fork`).
+    const branchedAt =
+      app === DEFAULT_APP && input.session
+        ? input.source === 'fork'
+          ? io.now()
+          : (
+              known ??
+              (await readSaid(io, app).catch(() => ({}) as Record<string, Said>))[input.session]
+            )?.fork
+        : undefined
     if (app === 'codex') await keepPresent(io, origin, input.session, input.given ? cwd : null)
     else if (app === DEFAULT_APP && (mode === 'pickup' || input.session))
       await announce(io, origin, app, {
@@ -417,6 +428,7 @@ export async function pickup(
         cwd: input.given ? cwd : null,
         transcript: input.transcript,
         again: mode === 'handoff',
+        ...(input.source === 'fork' ? { fork: true } : {}),
       })
     // Herdr (0.17.0, herdr.ts): a Claude Code session starting in a Herdr pane names itself there, in the background
     // (the name from its transcript, when it gave one); the wake mod writes its cards.
@@ -456,7 +468,9 @@ export async function pickup(
     // folder. Read once, and used again below.
     const claudeNames =
       app === DEFAULT_APP
-        ? sessionName(input.transcript ?? undefined).then((name) => (name ? [name] : []))
+        ? sessionName(input.transcript ?? undefined, branchedAt).then((name) =>
+            name ? [name] : [],
+          )
         : null
     const named = claudeNames ? (await claudeNames)[0] : undefined
     const asker = await askerOf(io, origin, app, {

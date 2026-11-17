@@ -1,7 +1,7 @@
 // Generated from packages/claude-plugin/src/wake/register.ts in recordplane/pendingyou: edit that, then run
 // `pnpm --filter @pendingyou/claude-plugin generate`.
 
-import { argumentsOf, blockedNote, CLAIM_PREFIX, CLI_COPY, cardTool, checkArgs, checked, claimedElsewhere, claimHeld, claimLease, cliConfigOf, connectionOf, dueCards, emptyBook, failed, folderOf, graceEnds, HANDED_FAST_MS, HANDED_READS, HERDR_EVERY_MS, HERDR_RUN_MS, handedDue, handedNext, handedOf, handedText, handedView, herdrArgv, herdrPayload, holdOf, holdReply, inHerdr, isFresh, isRefusal, isStale, isWaitingOnYou, KEEP_MS, LISTEN_RUN_MS, LISTENER_KEY, learn, leaseFor, leaseHolder, listenArgv, listened, loadedNote, loadedPath, mayListen, momentOf, originOf, PRESENCE_EVERY_MS, PRESENCE_RUN_MS, presenceArgv, prompted, put, readBook, readClaim, readListener, readSetup, readSignal, readSince, readWait, resultObject, SETUP_AFTER_MS, SETUP_RETRY_MS, SETUP_SERVER, SETUP_TRIES, SIGNAL_KEY, settle, setUpOf, setupNeeded, setupPrompt, stateOf, statusText, TICK_MS, takesHanded, told, toTell, untold, wakeText, wordsOf, } from "./wake.js";
+import { argumentsOf, BOOK_TOUCH_MS, blockedNote, CLAIM_PREFIX, CLAIM_RENEW_MS, CLI_COPY, cardTool, checkArgs, checked, claimedElsewhere, claimHeld, claimLapsesAt, claimLease, cliConfigOf, connectionOf, dueCards, emptyBook, failed, folderOf, graceAfter, graceEnds, HANDED_FAST_MS, HANDED_FOR_MS, HANDED_READS, HERDR_EVERY_MS, HERDR_RUN_MS, handedDue, handedNext, handedOf, handedText, handedView, herdrArgv, herdrPayload, holdOf, holdReply, inHerdr, isFresh, isRefusal, isStale, isWaitingOnYou, KEEP_MS, keepsBook, LISTEN_RUN_MS, LISTENER_KEY, learn, leaseFor, leaseHolder, listenArgv, listened, loadedNote, loadedPath, mayListen, momentOf, nameKept, newerElsewhere, originOf, PRESENCE_EVERY_MS, PRESENCE_RUN_MS, presenceArgv, presenceNameOf, prompted, put, readBook, readClaim, readListener, readSetup, readSignal, readSince, readWait, resultObject, retellDue, SETUP_AFTER_MS, SETUP_RETRY_MS, SETUP_SERVER, SETUP_TRIES, SIGNAL_KEY, settle, setUpOf, setupNeeded, setupPrompt, stateOf, statusText, TICK_MS, takesHanded, told, toTell, untold, used, wakeText, wordsOf, } from "./wake.js";
 const UNHEARD = { error: 'unavailable' };
 const RETRY_MS = 60_000;
 const live = {
@@ -22,6 +22,8 @@ const live = {
     setupConnection: 'Claude Code',
     seenAt: 0,
     handedAt: 0,
+    held: [],
+    heldRenewedAt: 0,
     handedTold: new Map(),
     folders: [],
     home: undefined,
@@ -43,8 +45,12 @@ function blockedServer() {
     return undefined;
 }
 async function save($) {
-    live.book = { ...live.book, updatedAt: await $.clock.now() };
-    if (Object.keys(live.book.cards).length)
+    live.book = {
+        ...live.book,
+        updatedAt: await $.clock.now(),
+        ...(live.folders.length ? { folders: live.folders } : {}),
+    };
+    if (keepsBook(live.book))
         await $.store.set(keyOf(live.sessionId), live.book);
     else
         await $.store.delete(keyOf(live.sessionId));
@@ -183,10 +189,72 @@ async function deliver($) {
     });
     return true;
 }
+async function giveBack($, keys, by) {
+    if (keys.length === 0)
+        return;
+    for (const { key, moment } of keys)
+        if (claimHeld(await $.store.get(key), moment, by))
+            await $.store.delete(key).catch(() => { });
+    await $.store.set(SIGNAL_KEY, { at: await $.clock.now() }).catch(() => { });
+}
+async function heldHanded($, now) {
+    if (live.held.length === 0)
+        return;
+    const me = live.sessionId;
+    if (live.busy) {
+        if (now - live.heldRenewedAt < CLAIM_RENEW_MS)
+            return;
+        live.heldRenewedAt = now;
+        for (const held of live.held)
+            if (claimHeld(await $.store.get(held.key), held.moment, me))
+                await $.store.set(held.key, { moment: held.moment, at: now, by: me, held: true });
+        return;
+    }
+    const holding = live.held;
+    live.held = [];
+    const { name, server } = live.book;
+    const told = [];
+    for (const held of holding) {
+        if (!claimHeld(await $.store.get(held.key), held.moment, me))
+            continue;
+        let view = null;
+        if (name && server) {
+            const args = { requestId: held.handed.requestId, name };
+            if (await allowed($, server, args))
+                try {
+                    view = handedView(resultObject(await $.mcp.call(server, 'get_request', args)), held.handed, name);
+                }
+                catch { }
+        }
+        if (live.sessionId !== me) {
+            await giveBack($, holding, me);
+            return;
+        }
+        if (!view) {
+            if (claimHeld(await $.store.get(held.key), held.moment, me))
+                await $.store.delete(held.key).catch(() => { });
+            continue;
+        }
+        await $.store.set(held.key, { moment: held.moment, at: now, by: me });
+        told.push({ view, key: held.key });
+    }
+    if (told.length === 0)
+        return;
+    $.prompt.submit({ text: handedText(told.map((each) => each.view)) }).catch(async () => {
+        for (const each of told) {
+            await $.store.delete(each.key).catch(() => { });
+            live.handedTold.delete(each.view.requestId);
+        }
+        live.handedAt = (await $.clock.now()) + RETRY_MS;
+    });
+}
 async function deliverHanded($) {
     const { name, server } = live.book;
     const now = await $.clock.now();
-    if (live.busy || !name || !server || !handedDue(live.seenAt, live.handedAt, now))
+    if (live.book.seenAt && now - live.book.updatedAt > BOOK_TOUCH_MS)
+        await save($);
+    await heldHanded($, now);
+    if (!name || !server || !handedDue(live.seenAt, live.handedAt, now))
         return;
     live.handedAt = handedNext(live.seenAt, now);
     if (!(await allowed($, server, { name }, 'list_pending')))
@@ -201,6 +269,7 @@ async function deliverHanded($) {
     const cards = [];
     const claims = [];
     const me = live.sessionId;
+    let others;
     for (const handed of listed) {
         const known = live.handedTold.get(handed.requestId);
         if (readSince(known, handed.updatedAt) || known === handed.updatedAt)
@@ -212,20 +281,61 @@ async function deliverHanded($) {
             continue;
         }
         const key = `${CLAIM_PREFIX}${handed.requestId}`;
-        if (claimedElsewhere(await $.store.get(key), handed.updatedAt, me)) {
+        const before = await $.store.get(key);
+        if (claimedElsewhere(before, handed.updatedAt, me, now)) {
+            const lapse = claimLapsesAt(before);
+            if (lapse !== null)
+                live.handedAt = Math.min(live.handedAt, lapse);
+            continue;
+        }
+        const mine = claimHeld(before, handed.updatedAt, me);
+        const dropped = mine && readClaim(before)?.held === true && !live.held.some((held) => held.key === key);
+        const again = dropped || retellDue(before, handed.updatedAt, me, now);
+        if (mine && !again) {
             live.handedTold.set(handed.requestId, handed.updatedAt);
             continue;
+        }
+        const after = graceAfter(handed);
+        if (!again && after > now) {
+            others ??= await otherBooks($);
+            if (newerElsewhere(handed, name, live.seenAt, others, live.home)) {
+                live.handedAt = Math.min(live.handedAt, after);
+                continue;
+            }
         }
         const args = { requestId: handed.requestId, name };
         if (!(await allowed($, server, args)))
             continue;
-        await $.store.set(key, { moment: handed.updatedAt, at: now, by: me });
+        await $.store.set(key, {
+            moment: handed.updatedAt,
+            at: now,
+            by: me,
+            ...(live.busy ? { held: true } : {}),
+            ...(again && !dropped ? { retold: true } : {}),
+        });
+        if (live.busy) {
+            if (live.sessionId !== me) {
+                claims.push({ key, moment: handed.updatedAt });
+                break;
+            }
+            live.handedTold.set(handed.requestId, handed.updatedAt);
+            if (!claimHeld(await $.store.get(key), handed.updatedAt, me))
+                continue;
+            if (live.held.length === 0)
+                live.heldRenewedAt = now;
+            live.held.push({ handed, key, moment: handed.updatedAt });
+            continue;
+        }
         let view = null;
         try {
             view = handedView(resultObject(await $.mcp.call(server, 'get_request', args)), handed, name);
         }
         catch { }
         const stored = await $.store.get(key);
+        if (live.sessionId !== me) {
+            claims.push({ key, moment: handed.updatedAt });
+            break;
+        }
         if (!view) {
             if (claimHeld(stored, handed.updatedAt, me))
                 await $.store.delete(key);
@@ -236,13 +346,17 @@ async function deliverHanded($) {
             continue;
         }
         live.handedTold.set(handed.requestId, handed.updatedAt);
-        claims.push(key);
+        claims.push({ key, moment: handed.updatedAt });
         cards.push(view);
+    }
+    if (live.sessionId !== me) {
+        await giveBack($, claims, me);
+        return;
     }
     if (cards.length === 0)
         return;
     $.prompt.submit({ text: handedText(cards) }).catch(async () => {
-        for (const key of claims)
+        for (const { key } of claims)
             await $.store.delete(key).catch(() => { });
         for (const card of cards)
             live.handedTold.delete(card.requestId);
@@ -277,8 +391,9 @@ async function listenHanded($) {
         .then(async (heard) => {
         const at = await $.clock.now();
         const current = readListener(await $.store.get(LISTENER_KEY));
-        if (!current || current.by === me)
-            await $.store.set(LISTENER_KEY, listened(lease, heard, at));
+        const owner = live.sessionId;
+        if (!current || current.by === me || current.by === owner)
+            await $.store.set(LISTENER_KEY, listened({ ...lease, by: owner }, heard, at));
         if ('handed' in heard && heard.handed.length) {
             await $.store.set(SIGNAL_KEY, { at });
             live.signalSeen = at;
@@ -297,6 +412,13 @@ async function heedSignal($) {
         return;
     live.signalSeen = at;
     live.handedAt = 0;
+}
+async function otherBooks($) {
+    const books = [];
+    for (const key of await $.store.keys())
+        if (key.startsWith('session:') && key !== keyOf(live.sessionId))
+            books.push(readBook(await $.store.get(key)));
+    return books;
 }
 async function prune($) {
     const now = await $.clock.now();
@@ -398,7 +520,7 @@ function soon($) {
     catch { }
 }
 function freshHanded() {
-    live.seenAt = Object.keys(live.book.cards).length ? live.book.updatedAt : 0;
+    live.seenAt = live.book.seenAt ?? (Object.keys(live.book.cards).length ? live.book.updatedAt : 0);
     live.handedAt = 0;
     live.handedTold = new Map();
 }
@@ -425,6 +547,8 @@ async function sayLive($) {
         const presence = live.presence;
         if (!presence || !live.sessionId)
             return;
+        if (!live.book.name)
+            await recallName($);
         const argv = presenceArgv(presence.config, presence.origin, {
             id: live.sessionId,
             ...(live.folders[0] ? { cwd: live.folders[0] } : {}),
@@ -454,12 +578,38 @@ async function startPresence($) {
     await sayLive($);
     live.presenceTimer = $.clock.every(PRESENCE_EVERY_MS, () => sayLive($));
 }
+async function recallName($) {
+    try {
+        const config = cliConfigOf($.plugin.root, $.plugin.name);
+        if (live.book.name || live.book.fork || !config || !live.sessionId)
+            return;
+        const name = presenceNameOf(await $.fs.read(`${config}/presence/claude-code.json`), live.sessionId);
+        if (!name)
+            return;
+        const now = await $.clock.now();
+        live.book = {
+            ...live.book,
+            name,
+            server: live.book.server ?? SETUP_SERVER,
+            seenAt: live.book.seenAt ?? Math.max(1, now - HANDED_FOR_MS),
+        };
+        if (!live.seenAt) {
+            live.seenAt = live.book.seenAt ?? 0;
+            live.handedAt = 0;
+        }
+        await save($);
+    }
+    catch { }
+}
 async function start($, e) {
     live.me = $.plugin.name;
     live.sessionId = await $.session.id();
     live.book = readBook(await $.store.get(keyOf(live.sessionId)));
+    await recallName($);
     freshHanded();
     await folderOfSession($, e.cwd);
+    if (live.book.name && live.book.seenAt)
+        await save($);
     await noteLoaded($);
     await claim($);
     live.timer?.cancel();
@@ -474,9 +624,19 @@ async function switchSession($, e) {
     const id = typeof e.session_id === 'string' && e.session_id ? e.session_id : await $.session.id();
     if (!id || id === live.sessionId)
         return;
-    const carried = e.source === 'fork' ? live.book : null;
+    const { seenAt: _seen, name: _name, ...forked } = live.book;
+    const carried = e.source === 'fork' ? { ...forked, fork: true } : null;
+    const was = live.sessionId;
     live.sessionId = id;
+    const held = live.held;
+    live.held = [];
+    await giveBack($, held, was);
+    const listener = readListener(await $.store.get(LISTENER_KEY));
+    if (listener?.by === was)
+        await $.store.set(LISTENER_KEY, { ...listener, by: id });
     live.book = carried ?? readBook(await $.store.get(keyOf(id)));
+    if (e.source === 'resume')
+        await recallName($);
     live.noted.clear();
     live.words.clear();
     freshHanded();
@@ -497,7 +657,8 @@ async function observe($, e, result) {
     if ($.plugin.name === CLI_COPY && found.tool === 'whoami' && setUpOf(output) === true)
         await setupDone($);
     const now = await $.clock.now();
-    if (output) {
+    const subagent = typeof e.agentId === 'string' && e.agentId !== '';
+    if (output && !subagent) {
         live.seenAt = now;
         live.handedAt = Math.min(live.handedAt, now + HANDED_FAST_MS);
     }
@@ -509,6 +670,10 @@ async function observe($, e, result) {
         live.folders = [...live.folders, folder].slice(-5);
     const before = live.book;
     live.book = learn(live.book, { ...found, input: argumentsOf(e), output }, now);
+    if (subagent)
+        live.book = nameKept(live.book, before);
+    else if (output)
+        live.book = used(live.book, now);
     if (live.book === before)
         return result;
     await save($);

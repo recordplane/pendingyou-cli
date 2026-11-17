@@ -81,6 +81,7 @@ async function run(io: Io, command: Command, hook: HookRun = { fallback: '' }): 
         ...(command.agentName ? { name: command.agentName } : {}),
         ...(command.transcript ? { transcript: command.transcript } : {}),
         ...(command.keep ? { keep: true } : {}),
+        ...(command.fork ? { fork: true } : {}),
         ...(command.pid ? { pid: command.pid } : {}),
         ...(command.at ? { at: command.at } : {}),
       })

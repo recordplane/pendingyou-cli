@@ -35,7 +35,7 @@ import { randomBytes } from 'node:crypto'
 import { mkdir, readdir, readFile, rm, rmdir, stat, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { postJson, SignInNeeded } from './api.ts'
-import { reportThreads, threadNames } from './apps/codex-wake.ts'
+import { keepListening, markOpen, reportThreads, threadNames } from './apps/codex-wake.ts'
 import type { AppId } from './apps/ids.ts'
 import { DEFAULT_ORIGIN } from './args.ts'
 import { readCredential } from './credentials.ts'
@@ -83,6 +83,8 @@ export interface PresenceCommand {
   transcript?: string
   /** Codex: keep saying live while `pid` runs (the keeper). */
   keep?: boolean
+  /** Claude Code's /branch (0.43.2): the session started as a branch of another. */
+  fork?: boolean
   pid?: number
   /** When the event happened (ms): an older event never overrides a newer one. */
   at?: number
@@ -106,11 +108,21 @@ const isObject = (value: unknown): value is Json =>
 
 const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value.trim() : null)
 
-/** The name the session goes by with Pending You: given, else from its transcript (Claude Code), else its hooks'. */
+/**
+ * The name the session goes by with Pending You: given, else from its transcript (Claude Code), else its hooks'. A
+ * branch's transcript (0.43.2) starts with its parent's conversation, so only what it said since it branched counts.
+ */
 async function nameFor(io: Io, command: PresenceCommand): Promise<string | null> {
   const given = presenceName(command.name)
   if (given) return given
-  if (command.app === 'claude-code') return (await sessionName(command.transcript)) ?? null
+  if (command.app === 'claude-code') {
+    const branched = command.fork
+      ? (command.at ?? io.now())
+      : command.session
+        ? (await readSaid(io, command.app))[command.session]?.fork
+        : undefined
+    return (await sessionName(command.transcript, branched)) ?? null
+  }
   if (!command.session) return null
   const names = await threadNames(io, command.app, command.session).catch(() => [])
   return presenceName(names.at(-1))
@@ -205,6 +217,11 @@ export interface Said {
    */
   since?: number
   mod?: number
+  /**
+   * When it started as a branch of another session (0.43.2, Claude Code's /branch): its transcript's names from before
+   * then are its parent's, never its own.
+   */
+  fork?: number
   cwd?: string
   name?: string
 }
@@ -231,6 +248,7 @@ export async function readSaid(
       ) {
         const since = numberOr(value.since)
         const mod = numberOr(value.mod)
+        const fork = numberOr(value.fork)
         const cwd = text(value.cwd)
         const name = text(value.name)
         sessions[id] = {
@@ -238,6 +256,7 @@ export async function readSaid(
           at: value.at,
           ...(since !== undefined ? { since } : {}),
           ...(mod !== undefined ? { mod } : {}),
+          ...(fork !== undefined ? { fork } : {}),
           ...(cwd ? { cwd } : {}),
           ...(name ? { name } : {}),
         }
@@ -294,10 +313,16 @@ async function sendOnce(
     state: command.state,
     at,
     ...(mod ? { mod: at } : {}),
+    ...(command.fork ? { fork: at } : {}),
     ...(cwd ? { cwd } : {}),
     ...(name ? { name } : {}),
   })
   if (noted.newer) return null
+  // Codex's, OpenCode's and Pi's own record of the thread (0.43.2): open while it says live, as Pending You shows it
+  // running, so it goes on hearing a question handed to it however long it's been quiet. Claude Code's wake mod keeps
+  // its own.
+  if (command.app !== 'claude-code')
+    await markOpen(io, command.app, command.session, command.state, at)
   // A reload: the closing session's "closed" went just before; this "live" goes after it.
   if (
     command.state === 'live' &&
@@ -335,6 +360,7 @@ export function presenceArgs(
     name?: string | null
     transcript?: string | null
     keep?: boolean
+    fork?: boolean
     pid?: number | null
     at?: number
   },
@@ -351,6 +377,7 @@ export function presenceArgs(
     ...(fields.name ? ['--name', fields.name] : []),
     ...(fields.transcript ? ['--transcript', fields.transcript] : []),
     ...(fields.keep ? ['--keep'] : []),
+    ...(fields.fork ? ['--fork'] : []),
     ...(fields.pid ? ['--pid', String(fields.pid)] : []),
     ...(fields.at ? ['--at', String(fields.at)] : []),
     ...(origin === DEFAULT_ORIGIN ? [] : ['--origin', origin]),
@@ -375,6 +402,8 @@ export async function announce(
     cwd?: string | null
     transcript?: string | null
     again?: boolean
+    /** Claude Code's /branch (0.43.2): the session started as a branch of another. */
+    fork?: boolean
   },
 ): Promise<void> {
   try {
@@ -391,6 +420,7 @@ export async function announce(
         session,
         ...(fields.cwd ? { cwd: fields.cwd } : {}),
         ...(fields.transcript ? { transcript: fields.transcript } : {}),
+        ...(fields.fork ? { fork: true } : {}),
         at: io.now(),
       }),
     )
@@ -527,6 +557,9 @@ async function keep(io: Io, command: PresenceCommand & { session: string; pid: n
           const outcome = await sendOnce(io, { ...command, state: 'live', at: io.now() })
           // Nothing this sign-in sends will be taken (an older server, a removed sign-in, a refusal): stop trying.
           if (outcome && GIVE_UP.has(outcome)) speaking = false
+          // Open, so it may be handed a question (0.43.2): Codex's one listener for those runs (it stops after 8 hours,
+          // and nothing else would start it again until a hook ran).
+          else await keepListening(io, command.origin, session)
         }
         if (badges) await reportThreads(io, app, { session, at: io.now() })
         if (!speaking && !badges) return

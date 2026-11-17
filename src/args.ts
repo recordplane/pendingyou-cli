@@ -60,6 +60,8 @@ export type Command =
       agentName?: string
       transcript?: string
       keep?: boolean
+      /** Claude Code's /branch (0.43.2): a new task, which never goes by a name its transcript carries from before. */
+      fork?: boolean
       pid?: number
       at?: number
     }
@@ -332,6 +334,7 @@ const FLAGS: Record<string, Record<string, boolean>> = {
     name: true,
     transcript: true,
     keep: false,
+    fork: false,
     pid: true,
     at: true,
   },
@@ -649,6 +652,7 @@ export function parseArgs(
         ...given('transcript'),
         ...(agentName ? { agentName } : {}),
         ...(flags.has('keep') ? { keep: true } : {}),
+        ...(flags.has('fork') ? { fork: true } : {}),
         ...(pid ? { pid } : {}),
         ...(at ? { at } : {}),
       } as Command

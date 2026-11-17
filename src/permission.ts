@@ -1054,8 +1054,13 @@ const tilde = (io: Pick<Io, 'home'>, path: string) => shortPath(path, io.home, 2
 /**
  * The name the session gave Pending You, as its transcript says: the latest of its Pending You calls with a `name`
  * (whoami's, a card tool's) or post_request's `session.label`. Null when it never gave one (or it can't be read).
+ * `after` (0.43.2): only calls made then or later, for a branch (Claude Code's /branch), whose transcript starts with its
+ * parent's conversation, timestamps and all: those names are its parent's.
  */
-export async function sessionName(path: string | undefined): Promise<string | null> {
+export async function sessionName(
+  path: string | undefined,
+  after?: number,
+): Promise<string | null> {
   if (!path) return null
   let file: Awaited<ReturnType<typeof open>>
   try {
@@ -1076,6 +1081,7 @@ export async function sessionName(path: string | undefined): Promise<string | nu
         return null
       }
       if (!isObject(entry) || entry.type !== 'assistant' || entry.isSidechain === true) return null
+      if (after !== undefined && !(Date.parse(text(entry.timestamp)) >= after)) return null
       const message = isObject(entry.message) ? entry.message : {}
       const blocks = Array.isArray(message.content) ? message.content : []
       for (const block of [...blocks].reverse()) {

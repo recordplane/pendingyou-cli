@@ -44,7 +44,7 @@ export function setupOf(heard: unknown): SetupState | null {
   if (typeof heard !== 'object' || heard === null) return null
   const setup = (heard as { setup?: unknown }).setup
   if (typeof setup !== 'object' || setup === null) return null
-  const { reported, verified, test } = setup as Record<string, unknown>
+  const { reported, verified, test, used } = setup as Record<string, unknown>
   if (typeof reported !== 'boolean' || typeof verified !== 'boolean') return null
   const card = typeof test === 'object' && test !== null ? (test as Record<string, unknown>) : null
   const ok =
@@ -55,6 +55,7 @@ export function setupOf(heard: unknown): SetupState | null {
   return {
     reported,
     verified,
+    ...(used === true ? { used: true as const } : {}),
     ...(ok
       ? {
           test: {
@@ -82,7 +83,10 @@ export function setupCalls(app: AppId, stopFirst: boolean): string {
 
 /**
  * The session-start line for a setup that isn't finished (about 110 tokens), or null when there's nothing for the
- * session to do: verified, or its test card waiting on the person.
+ * session to do: verified, its test card waiting on the person, or (0.43.2) in use (`used`: its assistants post cards
+ * under it, so nothing depends on its test question). Until 0.43.2 the sessions of a sign-in in use were told "setup’s
+ * test question isn’t sent yet" on every start after each init, and one told its person Pending You needed setting up
+ * (2026-11-17). One that reported and has posted nothing still is: that line is its only nudge.
  */
 export function setupLine(app: AppId, heard: HeardFor, setup: SetupState): string | null {
   if (setup.verified) return null
@@ -95,7 +99,7 @@ export function setupLine(app: AppId, heard: HeardFor, setup: SetupState): strin
       ? `Pending You: your person answered setup’s test question (${requestId}), asked by “${name}”. If you’re ${name}, ${pickUp(`name “${name}”`)} If you aren’t, leave it to ${name}.`
       : `Pending You: your person answered setup’s test question (${requestId}). C${pickUp('with your name').slice(1)}`
   }
-  if (setup.test) return null
+  if (setup.test || setup.used) return null
   if (setup.reported)
     return `Pending You: ${title} is connected, but setup’s test question isn’t sent yet. ${setupCalls(app, false)}`
   return `Pending You: ${title} is connected, but its setup isn’t finished. ${setupCalls(app, true)}`
@@ -139,11 +143,23 @@ export async function setupReminder(
   }
 }
 
+/**
+ * Status's Setup line for a sign-in in use whose own test question never went all the way round (0.43.2): never sent,
+ * or never picked up, which nothing depends on. Until then it said "waiting for its first session. Start … (or restart
+ * it)", beside "Ready", for a sign-in its agents had posted under for days.
+ */
+export const SETUP_IN_USE =
+  'finished. It’s in use, so its unfinished test question no longer matters.'
+
 /** Status's Setup line (never a reason it isn't Ready); null when Pending You doesn't say. */
 export function setupStatus(appName: string, setup: SetupState | null): string | null {
   if (!setup) return null
   if (setup.verified) return 'finished'
   if (setup.test?.turn === 'you') return 'its test card is waiting on you in Pending You'
   if (setup.test?.turn === 'agent') return `you answered its test card; ${appName} picks it up next`
+  // In use (0.43.2): finished, whatever became of its own test question.
+  if (setup.used) return SETUP_IN_USE
+  if (setup.reported)
+    return `reported, but its test question isn’t sent yet. Start ${appName} (or restart it); if it doesn’t finish by itself, say “${FINISH_SAY}”`
   return `waiting for its first session. Start ${appName} (or restart it); if it doesn’t finish by itself, say “${FINISH_SAY}”`
 }

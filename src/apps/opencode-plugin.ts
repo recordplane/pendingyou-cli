@@ -19,7 +19,9 @@
 //   another assistant (D21); `answer_delegated` and `hand_back` count among the card tools, with the session's folder.
 //   Since 0.42.0 a session that said its name without a card (`pendingyou_whoami`, `_list_pending` or `_get_request`
 //   with a `name`) is told to `posted` too, which knows it by that name and folder (never as a card of its own, nor the
-//   turn's), and keeps its listener the same way: a question handed to it wakes it.
+//   turn's), and keeps its listener the same way: a question handed to it wakes it. Since 0.43.2 a session open in this
+//   OpenCode (its presence heartbeat) keeps it however long since it used Pending You, as Pending You shows it running:
+//   each heartbeat starts its listener again when it's gone (it stops by itself after 8 hours).
 // - a session going idle (`session.status` idle): the Stop check on its last turn (`stopcheck`), which asks it to go on
 //   once a turn at most, never for a turn the plugin started to ask, one the person stopped, or a subagent's session;
 //   the plugin starts that turn and shows a toast saying why.
@@ -134,6 +136,12 @@ const NAMED_TOOL = /^[A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*_(whoami|list_pending
  * command line's HANDED_FOR_MS.
  */
 export const HANDED_FOR_MS = 12 * 60 * 60_000
+/**
+ * How long after it last said live a session counts as open (0.43.2): the command line's OPEN_FOR_MS, Pending You's
+ * window for showing it running. While it is, a session with a name may be handed a question however long it's been
+ * quiet (`liveAt` in the hooks' record, which each live writes).
+ */
+export const OPEN_FOR_MS = 15 * 60_000
 /** What the toast says when the Stop check asks a session to go on. */
 const NUDGED = 'Asked OpenCode to put what it needs from you on a card.'
 
@@ -161,20 +169,18 @@ function configFolder(): string {
 
 /**
  * Whether the hooks' record of a session (`<app>-threads.json`, codex-wake.ts) says it's worth a listener: cards waiting,
- * or a name it went by on the card tools (0.42.0: or said with whoami, list_pending, get_request) within HANDED_FOR_MS.
- * False for anything it can't read.
+ * or a name it went by on the card tools (0.42.0: or said with whoami, list_pending, get_request) within HANDED_FOR_MS,
+ * or (0.43.2) while it's open. False for anything it can't read.
  */
 export function wantsListener(file: unknown, session: string, now = Date.now()): boolean {
   const threads = isObject(file) && isObject(file.threads) ? file.threads : {}
   const thread = threads[session]
   if (!isObject(thread)) return false
   if (isObject(thread.cards) && Object.keys(thread.cards).length > 0) return true
-  return (
-    Array.isArray(thread.names) &&
-    thread.names.length > 0 &&
-    typeof thread.at === 'number' &&
-    now - thread.at < HANDED_FOR_MS
-  )
+  if (!Array.isArray(thread.names) || thread.names.length === 0) return false
+  // Open (0.43.2): its app said so in the last OPEN_FOR_MS, however long since it used Pending You.
+  if (typeof thread.liveAt === 'number' && now - thread.liveAt < OPEN_FOR_MS) return true
+  return typeof thread.at === 'number' && now - thread.at < HANDED_FOR_MS
 }
 
 const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
@@ -345,7 +351,13 @@ export async function pendingYou(input: PluginInput, deps: Deps): Promise<Hooks>
     deps.presence(id, 'live')
     stopBeat ??=
       deps.every?.(PRESENCE_EVERY_MS, () => {
-        for (const each of present) deps.presence?.(each, 'live')
+        for (const each of present) {
+          deps.presence?.(each, 'live')
+          // Open, with a name (0.43.2): its listener runs, however long it's been quiet (it stops after 8 hours).
+          const session = sessions.get(each)
+          if (session && !session.listener && !session.parent && deps.wanted?.(each))
+            listenFor(each, session)
+        }
       }) ?? null
   }
   const closed = (id: string) => {

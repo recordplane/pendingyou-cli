@@ -30,6 +30,11 @@
 // (`listen --app codex --handed`), which `codex queue`s each into the thread it's for. `answer_delegated` and
 // `hand_back` count as the turn's card calls (for the Stop check), and never make a card the session's own.
 //
+// Since 0.43.2 a session its app says is open (presence: Codex's keeper, OpenCode's plugin, Pi's extension; `liveAt`,
+// within OPEN_FOR_MS) keeps listening however long since it used Pending You, as Pending You shows it running: each live
+// marks the thread open (markOpen), the keeper keeps Codex's one listener for handed questions running, and OpenCode's
+// and Pi's heartbeat start their session's listener again. A "closed" leaves the 12 hours as before.
+//
 // Since 0.17.0 a thread also remembers the Herdr pane it runs in, while it's open there, and how pressing each of its
 // cards is (urgency, blocking, asked in the conversation too): a pane's badges are the cards its sessions wait on
 // (reportThreads, herdr.ts), written again by `posted`, the listener, Codex's keeper and OpenCode's and Pi's presence.
@@ -74,6 +79,7 @@ import {
   handedCard,
   handedMessage,
   namesAnotherComputer,
+  OPEN_FOR_MS,
 } from '../handed.ts'
 import {
   clearHerdr,
@@ -130,6 +136,11 @@ interface Thread {
   names?: string[]
   /** Its folder, as its hooks gave it (0.14.0). */
   cwd?: string
+  /**
+   * When its app last said it's open (0.43.2, presence's live; gone with its closed): for OPEN_FOR_MS after, it may be
+   * handed a question however long since it used Pending You.
+   */
+  liveAt?: number
   /** The Herdr pane it runs in (0.17.0, herdr.ts), while it's open there: its cards are that pane's badges. */
   herdr?: string
   /**
@@ -249,6 +260,9 @@ function threadOf(value: unknown): Thread | null {
     ...(names.length ? { names: names.slice(-NAMES) } : {}),
     ...(typeof value.cwd === 'string' && value.cwd ? { cwd: value.cwd } : {}),
     ...(typeof value.herdr === 'string' && PANE_ID.test(value.herdr) ? { herdr: value.herdr } : {}),
+    ...(typeof value.liveAt === 'number' && Number.isFinite(value.liveAt)
+      ? { liveAt: value.liveAt }
+      : {}),
     ...(typeof value.answeredAt === 'number' && Number.isFinite(value.answeredAt)
       ? { answeredAt: value.answeredAt }
       : {}),
@@ -272,11 +286,13 @@ async function load(io: Pick<Io, 'env' | 'home'>, app: AppId): Promise<ThreadSta
 
 /**
  * Whether a thread with no card waiting may still be handed a question (0.14.0): it went by a name on the card tools
- * (0.42.0: or said it with whoami, list_pending or get_request) within HANDED_FOR_MS, while Pending You offers its task
- * to the person.
+ * (0.42.0: or said it with whoami, list_pending or get_request), and used Pending You within HANDED_FOR_MS or (0.43.2)
+ * its app says it's open, as Pending You shows it running.
  */
 const mayBeHanded = (thread: Thread, now: number) =>
-  Boolean(thread.names?.length) && now - thread.at < HANDED_FOR_MS
+  Boolean(thread.names?.length) &&
+  (now - thread.at < HANDED_FOR_MS ||
+    (thread.liveAt !== undefined && now - thread.liveAt < OPEN_FOR_MS))
 
 /** Whether a thread is worth a listener: cards waiting, or a question that may be handed to it. */
 const listenable = (thread: Thread | undefined, now: number) =>
@@ -296,7 +312,11 @@ async function change(
     for (const [id, turn] of Object.entries(state.turns))
       if (!(now - turn.at < KEEP_TURN_MS)) delete state.turns[id]
     for (const [id, thread] of Object.entries(state.threads))
-      if (!(now - thread.at < KEEP_THREAD_MS) || !listenable(thread, now)) delete state.threads[id]
+      if (
+        !(now - Math.max(thread.at, thread.liveAt ?? 0) < KEEP_THREAD_MS) ||
+        !listenable(thread, now)
+      )
+        delete state.threads[id]
     await writeWhole(path, `${JSON.stringify(state, null, 2)}\n`, { secret: true })
     return state
   })
@@ -559,6 +579,29 @@ export async function touchThread(
 }
 
 /**
+ * A thread its app says is open, or closed (0.43.2, from presence): open, it may be handed a question however long
+ * since it used Pending You (mayBeHanded); closed, the 12 hours as before. Only a thread the hooks know; an older event
+ * never undoes a newer one. Never throws.
+ */
+export async function markOpen(
+  io: Pick<Io, 'env' | 'home' | 'now' | 'sleep'>,
+  app: AppId,
+  thread: string,
+  state: 'live' | 'closed',
+  at: number,
+): Promise<void> {
+  try {
+    if (!THREAD.test(thread) || !(await load(io, app)).threads[thread]) return
+    await change(io, app, (record) => {
+      const known = record.threads[thread]
+      if (!known) return
+      if (state === 'live') known.liveAt = Math.max(known.liveAt ?? 0, at)
+      else if (known.liveAt !== undefined && known.liveAt <= at) delete known.liveAt
+    })
+  } catch {}
+}
+
+/**
  * The names a thread went by on the card tools (0.14.0; 0.42.0, or said with whoami, list_pending, get_request), newest
  * last; none for a thread the hooks don't know.
  */
@@ -642,6 +685,7 @@ async function candidates(io: Pick<Io, 'env' | 'home' | 'now'>, app: AppId): Pro
       ...(record.cwd ? { cwd: record.cwd } : {}),
       at: record.at,
       live: app === 'codex' || (await listening(io, app, thread)),
+      ...(record.liveAt !== undefined && now - record.liveAt < OPEN_FOR_MS ? { open: true } : {}),
     })
   }
   return found
@@ -1005,6 +1049,14 @@ async function handedHere(
   return mine
 }
 
+/**
+ * A card that came back from its helper to the person (0.28.0's notice) is still in front of them, and their answer
+ * is the thread's to hear (0.43.2): its notice is told, and the card stays. Until 0.43.2 the listener forgot it with
+ * the notice, and nothing put it back (the agent's ack_answer isn't a card call the hooks read), so the answer that
+ * followed was never heard.
+ */
+const stillTheirs = (heard: Heard) => noticeOf(heard)?.kind === 'came_back' && !isClosed(heard)
+
 /** Gives back what was claimed for a session that couldn't be told: another may hear it. */
 async function giveBack(io: Io, origin: string, list: readonly { heard: Heard }[]) {
   for (const { heard } of list)
@@ -1081,9 +1133,9 @@ export async function listen(
         // A question handed to someone (D21) is never its asker's to be woken for: that's the helper's line.
         if (!card || !heard.ready || delegatedOf(heard)) continue
         // Handed over already (the person wrote in the app since): nothing to wake it for.
-        if (await wasHanded(io, origin, heard.requestId, momentOf(heard)))
-          done.push(heard.requestId)
-        else ready.push({ heard, card })
+        if (await wasHanded(io, origin, heard.requestId, momentOf(heard))) {
+          if (!stillTheirs(heard)) done.push(heard.requestId)
+        } else ready.push({ heard, card })
       }
       // The app doesn't know the thread (archived, gone), or can't be reached from here: the hooks hand answers over.
       // Its cards come off its Herdr pane's badges (0.17.0).
@@ -1124,7 +1176,7 @@ export async function listen(
         await gone()
         return 0
       }
-      for (const { heard } of ready) done.push(heard.requestId)
+      for (const { heard } of ready) if (!stillTheirs(heard)) done.push(heard.requestId)
       // Closed cards nobody needs telling about go too.
       for (const heard of requests)
         if (cards[heard.requestId] && isClosed(heard) && !done.includes(heard.requestId))

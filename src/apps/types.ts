@@ -90,6 +90,11 @@ export interface StatusContext {
 export interface SetupState {
   reported: boolean
   verified: boolean
+  /**
+   * In use (0.43.2, Pending You since the same release): a card posted under it outside Getting started, so its test
+   * question matters to nothing. Absent from an older Pending You, or none yet.
+   */
+  used?: true
   /** The test question the setup sent: whose turn it is, and the name of the session that asked it. */
   test?: { requestId: string; turn: 'you' | 'agent'; name?: string }
 }

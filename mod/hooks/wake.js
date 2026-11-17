@@ -175,6 +175,17 @@ export function readBook(value) {
         ...(typeof value.server === 'string' && isPendingYou(value.server)
             ? { server: value.server }
             : {}),
+        ...(count(value.seenAt) ? { seenAt: count(value.seenAt) } : {}),
+        ...(Array.isArray(value.folders)
+            ? (() => {
+                const folders = value.folders
+                    .map((folder) => text(folder, 1000))
+                    .filter((folder) => folder !== undefined)
+                    .slice(-5);
+                return folders.length ? { folders } : {};
+            })()
+            : {}),
+        ...(value.fork === true ? { fork: true } : {}),
         cards,
     };
 }
@@ -691,6 +702,9 @@ export function claimLease(value, me, now) {
 export const HANDED_FAST_MS = 60_000;
 export const HANDED_SLOW_MS = 3 * 60_000;
 export const HANDED_FOR_MS = 12 * 60 * 60_000;
+export const HANDED_IDLE_MS = 10 * 60_000;
+const USED_EVERY_MS = 60_000;
+export const BOOK_TOUCH_MS = 24 * 60 * 60_000;
 export const HANDED_GRACE_MS = 30_000;
 export const CLAIM_PREFIX = 'handed:';
 export const HANDED_PREFIX = 'Pending You: your person handed you';
@@ -716,8 +730,39 @@ export function readSince(known, updatedAt) {
     const at = Number(known.slice(1));
     return !Number.isFinite(at) || at === 0 || Date.parse(updatedAt) <= at;
 }
-export const handedDue = (seenAt, nextAt, now) => seenAt > 0 && now - seenAt < HANDED_FOR_MS && now >= nextAt;
-export const handedNext = (seenAt, now) => now + (now - seenAt < RECENT_MS ? HANDED_FAST_MS : HANDED_SLOW_MS);
+export const handedDue = (seenAt, nextAt, now) => seenAt > 0 && now >= nextAt;
+export const handedNext = (seenAt, now) => now +
+    (now - seenAt < RECENT_MS
+        ? HANDED_FAST_MS
+        : now - seenAt < HANDED_FOR_MS
+            ? HANDED_SLOW_MS
+            : HANDED_IDLE_MS);
+export const keepsBook = (book) => Object.keys(book.cards).length > 0 || Boolean(book.name && book.seenAt) || book.fork === true;
+export function nameKept(book, before) {
+    if (book.name === before.name && book.server === before.server)
+        return book;
+    const { name: _name, server: _server, ...rest } = book;
+    return {
+        ...rest,
+        ...(before.name ? { name: before.name } : {}),
+        ...(before.server ? { server: before.server } : {}),
+    };
+}
+const nameKeyOf = (name) => name.trim().toLowerCase().replace(/\s+/g, ' ');
+export function newerElsewhere(handed, name, seenAt, books, home) {
+    const key = nameKeyOf(name);
+    return books.some((book) => book.name !== undefined &&
+        nameKeyOf(book.name) === key &&
+        (book.seenAt ?? 0) > seenAt &&
+        (handed.byName ||
+            !handed.cwd ||
+            !book.folders?.length ||
+            inTaskFolder(book.folders, handed.cwd, home)));
+}
+export const graceAfter = (handed) => Date.parse(handed.updatedAt) + HANDED_GRACE_MS;
+export const used = (book, now) => book.seenAt !== undefined && now - book.seenAt < USED_EVERY_MS && now >= book.seenAt
+    ? book
+    : { ...book, seenAt: now };
 export function handedOf(output) {
     const requests = output && Array.isArray(output.requests) ? output.requests : [];
     return requests.flatMap((request) => {
@@ -800,19 +845,43 @@ export function handedView(output, handed, name) {
         ...(said ? { said } : {}),
     };
 }
+export const CLAIM_RENEW_MS = 60_000;
+export const CLAIM_LAPSE_MS = 3 * 60_000;
+export const RETELL_AFTER_MS = 10 * 60_000;
 export function readClaim(value) {
     if (!isObject(value) || typeof value.moment !== 'string')
         return null;
     const by = text(value.by, 200);
-    return { moment: value.moment, at: count(value.at) ?? 0, ...(by ? { by } : {}) };
+    return {
+        moment: value.moment,
+        at: count(value.at) ?? 0,
+        ...(by ? { by } : {}),
+        ...(value.held === true ? { held: true } : {}),
+        ...(value.retold === true ? { retold: true } : {}),
+    };
 }
-export function claimedElsewhere(value, moment, me) {
+const lapsed = (claim, now) => claim.held === true && now - claim.at >= CLAIM_LAPSE_MS;
+export function claimedElsewhere(value, moment, me, now) {
     const claim = readClaim(value);
-    return claim?.moment === moment && claim.by !== me;
+    if (claim?.moment !== moment || claim.by === me)
+        return false;
+    return now === undefined || !lapsed(claim, now);
+}
+export function claimLapsesAt(value) {
+    const claim = readClaim(value);
+    return claim?.held ? claim.at + CLAIM_LAPSE_MS : null;
 }
 export function claimHeld(value, moment, me) {
     const claim = readClaim(value);
     return claim?.moment === moment && claim.by === me;
+}
+export function retellDue(value, moment, me, now) {
+    const claim = readClaim(value);
+    return (claim?.moment === moment &&
+        claim.by === me &&
+        !claim.held &&
+        !claim.retold &&
+        now - claim.at >= RETELL_AFTER_MS);
 }
 export const LISTENER_KEY = 'handed-listener';
 export const SIGNAL_KEY = 'handed-signal';
@@ -835,7 +904,7 @@ export function readListener(value) {
     return { by, until, ...(since ? { since } : {}), ...(quietUntil ? { quietUntil } : {}) };
 }
 export function mayListen(record, me, seenAt, now) {
-    if (seenAt <= 0 || now - seenAt >= HANDED_FOR_MS)
+    if (seenAt <= 0)
         return false;
     if (record?.quietUntil && now < record.quietUntil)
         return false;
@@ -989,6 +1058,21 @@ export function originOf(manifest) {
         }
     const origin = typeof parsed === 'object' && parsed !== null ? parsed.origin : null;
     return typeof origin === 'string' && /^https?:\/\/[^\s/]+$/.test(origin) ? origin : null;
+}
+export function presenceNameOf(record, sessionId) {
+    let parsed = record;
+    if (typeof record === 'string')
+        try {
+            parsed = JSON.parse(record);
+        }
+        catch {
+            return undefined;
+        }
+    const sessions = isObject(parsed) && isObject(parsed.sessions) ? parsed.sessions : null;
+    if (!sessions || !sessionId || !Object.hasOwn(sessions, sessionId))
+        return undefined;
+    const said = sessions[sessionId];
+    return isObject(said) ? text(said.name, 120) : undefined;
 }
 export function presenceArgv(config, origin, session) {
     return [

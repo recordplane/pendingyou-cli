@@ -29,6 +29,8 @@
 // - Since 0.42.0 a session that said its name without a card (whoami, list_pending or get_request with a `name`) is told
 //   to `posted` too, which knows it by that name and folder (never as a card of its own, nor the run's), and its
 //   listener runs the same 12 hours: a question handed to it wakes it.
+// - Since 0.43.2 a session open in this Pi (its presence heartbeat) keeps its listener however long since it used
+//   Pending You, as Pending You shows it running: each heartbeat starts it again when it's gone.
 //
 // - Presence (0.15.0, presence.ts): a session that starts says it's live, every 5 minutes after while Pi runs, and
 //   closed on `session_shutdown`, through `presence --state …`, started detached so Pi never waits on it.
@@ -116,6 +118,12 @@ export const NAMED_TOOL =
  * command line's HANDED_FOR_MS.
  */
 export const HANDED_FOR_MS = 12 * 60 * 60_000
+/**
+ * How long after it last said live a session counts as open (0.43.2): the command line's OPEN_FOR_MS, Pending You's
+ * window for showing it running. While it is, a session with a name may be handed a question however long it's been
+ * quiet (`liveAt` in pi-threads.json, which each live writes).
+ */
+export const OPEN_FOR_MS = 15 * 60_000
 /** How a wake for a question the person handed the session starts: the command line's HANDED_PREFIX. */
 export const HANDED_PREFIX = 'Pending You: your person handed you'
 /** How a wake for a reply on one starts (0.15.0): the command line's isHandedWake. */
@@ -217,20 +225,18 @@ export function startedHanded(messages: unknown, wakes: ReadonlySet<string>): bo
 
 /**
  * Whether `pi-threads.json` says a session is worth a listener: cards waiting, or (0.14.0) a name it went by on the
- * card tools (0.42.0: or said with whoami, list_pending, get_request) within HANDED_FOR_MS. False for anything it can't
- * read.
+ * card tools (0.42.0: or said with whoami, list_pending, get_request) within HANDED_FOR_MS, or (0.43.2) while it's open.
+ * False for anything it can't read.
  */
 export function wantsListener(file: unknown, session: string, now = Date.now()): boolean {
   const threads = isObject(file) && isObject(file.threads) ? file.threads : {}
   const thread = threads[session]
   if (!isObject(thread)) return false
   if (isObject(thread.cards) && Object.keys(thread.cards).length > 0) return true
-  return (
-    Array.isArray(thread.names) &&
-    thread.names.length > 0 &&
-    typeof thread.at === 'number' &&
-    now - thread.at < HANDED_FOR_MS
-  )
+  if (!Array.isArray(thread.names) || thread.names.length === 0) return false
+  // Open (0.43.2): its app said so in the last OPEN_FOR_MS, however long since it used Pending You.
+  if (typeof thread.liveAt === 'number' && now - thread.liveAt < OPEN_FOR_MS) return true
+  return typeof thread.at === 'number' && now - thread.at < HANDED_FOR_MS
 }
 
 /** The Stop check's reason to go on, from what it printed; null when it let the run settle. */
@@ -330,6 +336,8 @@ export function pendingYou(setup: PiSetup, options: ExtensionOptions = {}) {
       beat = later(() => {
         if (closed || !present) return
         presence(present, 'live')
+        // Open, with a name (0.43.2): its listener runs, however long it's been quiet (it stops after 8 hours).
+        if (!listener) listen()
         heartbeat()
       }, PRESENCE_EVERY_MS)
       unref(beat)
