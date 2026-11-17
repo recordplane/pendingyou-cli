@@ -1,7 +1,7 @@
 // Generated from packages/claude-plugin/src/wake/register.ts in recordplane/pendingyou: edit that, then run
 // `pnpm --filter @pendingyou/claude-plugin generate`.
 
-import { argumentsOf, blockedNote, CLAIM_PREFIX, CLI_COPY, cardTool, checked, claimedElsewhere, claimHeld, claimLease, cliConfigOf, connectionOf, dueCards, emptyBook, failed, folderOf, graceEnds, HANDED_FAST_MS, HANDED_READS, HERDR_EVERY_MS, HERDR_RUN_MS, handedDue, handedNext, handedOf, handedText, handedView, herdrArgv, herdrPayload, holdOf, holdReply, inHerdr, isFresh, isRefusal, isStale, isWaitingOnYou, KEEP_MS, LISTEN_RUN_MS, LISTENER_KEY, learn, leaseFor, leaseHolder, listenArgv, listened, loadedNote, loadedPath, mayListen, momentOf, originOf, PRESENCE_EVERY_MS, PRESENCE_RUN_MS, presenceArgv, prompted, put, readBook, readClaim, readListener, readSetup, readSignal, readSince, readWait, resultObject, SETUP_AFTER_MS, SETUP_RETRY_MS, SETUP_SERVER, SETUP_TRIES, SIGNAL_KEY, settle, setUpOf, setupNeeded, setupPrompt, stateOf, statusText, TICK_MS, takesHanded, told, toTell, untold, wakeText, } from "./wake.js";
+import { argumentsOf, blockedNote, CLAIM_PREFIX, CLI_COPY, cardTool, checkArgs, checked, claimedElsewhere, claimHeld, claimLease, cliConfigOf, connectionOf, dueCards, emptyBook, failed, folderOf, graceEnds, HANDED_FAST_MS, HANDED_READS, HERDR_EVERY_MS, HERDR_RUN_MS, handedDue, handedNext, handedOf, handedText, handedView, herdrArgv, herdrPayload, holdOf, holdReply, inHerdr, isFresh, isRefusal, isStale, isWaitingOnYou, KEEP_MS, LISTEN_RUN_MS, LISTENER_KEY, learn, leaseFor, leaseHolder, listenArgv, listened, loadedNote, loadedPath, mayListen, momentOf, originOf, PRESENCE_EVERY_MS, PRESENCE_RUN_MS, presenceArgv, prompted, put, readBook, readClaim, readListener, readSetup, readSignal, readSince, readWait, resultObject, SETUP_AFTER_MS, SETUP_RETRY_MS, SETUP_SERVER, SETUP_TRIES, SIGNAL_KEY, settle, setUpOf, setupNeeded, setupPrompt, stateOf, statusText, TICK_MS, takesHanded, told, toTell, untold, wakeText, wordsOf, } from "./wake.js";
 const UNHEARD = { error: 'unavailable' };
 const RETRY_MS = 60_000;
 const live = {
@@ -32,6 +32,8 @@ const live = {
     herdrTimer: null,
     waiting: false,
     signalSeen: 0,
+    words: new Map(),
+    wordless: new Set(),
 };
 const keyOf = (sessionId) => `session:${sessionId}`;
 function blockedServer() {
@@ -107,23 +109,37 @@ async function allowed($, server, args, tool = 'get_request') {
         return false;
     }
 }
+async function readCard($, card, words) {
+    const args = checkArgs(card, words);
+    if (!(await allowed($, card.server, args)))
+        return { output: null, blocked: true };
+    try {
+        return {
+            output: resultObject(await $.mcp.call(card.server, 'get_request', args)),
+            blocked: false,
+        };
+    }
+    catch (error) {
+        return { output: null, blocked: isRefusal(error) };
+    }
+}
 async function check($, requestId) {
     const card = live.book.cards[requestId];
     if (!card)
         return 'error';
-    let output = null;
-    let blocked = false;
-    const args = { requestId, ...(card.name ? { name: card.name } : {}) };
-    if (await allowed($, card.server, args)) {
-        try {
-            output = resultObject(await $.mcp.call(card.server, 'get_request', args));
-        }
-        catch (error) {
-            blocked = isRefusal(error);
-        }
+    const words = !live.wordless.has(card.server);
+    let read = await readCard($, card, words);
+    if (words && !read.blocked && !(read.output && stateOf(read.output))) {
+        read = await readCard($, card, false);
+        if (read.output && stateOf(read.output))
+            live.wordless.add(card.server);
     }
-    else
-        blocked = true;
+    const { output, blocked } = read;
+    const said = output ? wordsOf(output) : undefined;
+    if (said)
+        live.words.set(requestId, said);
+    else if (output && stateOf(output))
+        live.words.delete(requestId);
     const outcome = output && stateOf(output) ? 'ok' : blocked ? 'blocked' : 'error';
     if (outcome === 'ok') {
         live.verified.add(card.server);
@@ -160,7 +176,7 @@ async function deliver($) {
         return false;
     live.book = told(live.book, cards);
     await save($);
-    $.prompt.submit({ text: wakeText(cards) }).catch(async () => {
+    $.prompt.submit({ text: wakeText(cards, live.words) }).catch(async () => {
         live.book = untold(live.book, cards);
         live.quietUntil = (await $.clock.now()) + RETRY_MS;
         await save($).catch(() => { });
@@ -462,6 +478,7 @@ async function switchSession($, e) {
     live.sessionId = id;
     live.book = carried ?? readBook(await $.store.get(keyOf(id)));
     live.noted.clear();
+    live.words.clear();
     freshHanded();
     await noteLoaded($);
     if (typeof e.cwd === 'string' && e.cwd)

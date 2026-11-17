@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.43.1 (2026-11-16)
+
+- Claude Code: when you answer a card while its session sits idle, the turn that wakes it now carries your answer in
+  words, and the version to acknowledge it with: "Pending You: your person answered “Which retry plan?” (req_…): “Job
+  queue. Try it twice first.” Act on their words, then ack_answer (…) with a one-line outcome." The assistant no longer
+  calls `get_request` just to read it, which saves a call of its model for each answer. Only your own answer, when the
+  words are all of it: an approved draft or an option that sends, a picture, a helper's or a teammate's answer, a
+  high-stakes card, and a reply on one of its answers still say to call `get_request`, as before. The words stay in the
+  session: never in the mod's store, a log or a program's arguments. Codex is unchanged (its wake goes through a
+  command's arguments, which other programs can read, so it still reads the answer itself).
+- Needs Pending You's server from the same release (get_request's answer in words); against an older one the mod checks
+  as before and the wake says to call `get_request`.
+- Run `npx pendingyou@latest init`; nothing to restart: an open Claude Code session reloads the mod by itself.
+
 ## 0.43.0 (2026-11-16)
 
 - Pending You for Herdr shows an assistant's question on a card it still has, and answers it. When a card you handed

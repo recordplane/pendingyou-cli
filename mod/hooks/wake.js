@@ -417,9 +417,71 @@ export function settle(book, now) {
 export const isStale = (book, now) => now - book.updatedAt > KEEP_MS;
 const titled = (card) => card.title ? `“${clip(card.title)}” (${card.requestId})` : card.requestId;
 const named = (card) => (card.name ? `name “${card.name}”` : 'your name');
-function line(card) {
+export const WORDS_CHARS = 600;
+export function wordsOf(output) {
+    const state = stateOf(output);
+    if (state?.status !== 'answered' || state.turn !== 'agent' || state.approvedDraft)
+        return undefined;
+    const given = isObject(output.answer) ? output.answer.words : undefined;
+    if (typeof given !== 'string')
+        return undefined;
+    const flat = given.replace(/\s+/g, ' ').trim().replaceAll('“', '‘').replaceAll('”', '’');
+    if (!flat)
+        return undefined;
+    const chars = [...flat];
+    const cut = chars.length > WORDS_CHARS;
+    const text = cut
+        ? `${chars
+            .slice(0, WORDS_CHARS - 1)
+            .join('')
+            .trimEnd()}…`
+        : flat;
+    return { moment: momentOf(state), text, cut };
+}
+export const checkArgs = (card, words) => ({
+    requestId: card.requestId,
+    ...(card.name ? { name: card.name } : {}),
+    ...(words ? { words: true } : {}),
+});
+function wordsFor(card, words) {
+    const state = card.state;
+    if (!words || !state || card.kind === 'answer')
+        return undefined;
+    if (state.status !== 'answered' || state.approvedDraft)
+        return undefined;
+    return words.moment === momentOf(state) ? words : undefined;
+}
+function line(card, given) {
     const state = card.state;
     const get = `get_request (requestId ${card.requestId}, ${named(card)})`;
+    const words = wordsFor(card, given);
+    if (words) {
+        const ack = `ack_answer (requestId ${card.requestId}, ${named(card)}, expectedVersion ${state.version})`;
+        const quoted = `: “${words.text}”`;
+        const after = words.cut ? `Cut short: ${get} has all of it.` : undefined;
+        const rest = { quoted: true, ...(after ? { after } : {}) };
+        if (state.handled === 'self')
+            return {
+                happened: `your person will handle ${titled(card)} themselves${quoted}`,
+                todo: `close it out: take no action on it, leave things as they are and don’t follow up; ${ack} with an outcome like “Left to you”`,
+                ...rest,
+            };
+        if (state.handled === 'leave')
+            return {
+                happened: `your person won’t do ${titled(card)}${quoted}`,
+                todo: `close it out: don’t do it for them and don’t follow up; ${ack} with an outcome like “Skipped”`,
+                ...rest,
+            };
+        return {
+            happened: `your person answered ${titled(card)}${quoted}`,
+            todo: `act on their words, then ${ack} with a one-line outcome`,
+            ...rest,
+        };
+    }
+    const [happened, todo] = plainLine(card, get, state);
+    return { happened, todo };
+}
+function plainLine(card, get, state) {
     if (card.kind === 'answer')
         return [
             `your person replied to your answer ${titled(card)}`,
@@ -461,7 +523,7 @@ function line(card) {
     }
 }
 const capital = (sentence) => sentence.charAt(0).toUpperCase() + sentence.slice(1);
-export function wakeText(cards) {
+export function wakeText(cards, words) {
     const asked = cards.some((card) => card.state?.turn === 'agent' &&
         !isClosed(card.state.status) &&
         card.state.status !== 'delegated' &&
@@ -469,15 +531,16 @@ export function wakeText(cards) {
     const reopen = asked
         ? ' If you need more from them, or the next step, post a new card with follows: that card’s requestId; never reopen.'
         : '';
+    const lineOf = (card) => line(card, words?.get(card.requestId));
     if (cards.length === 1) {
-        const [happened, todo] = line(cards[0]);
-        return `Pending You: ${happened}. ${capital(todo)}.${reopen}`;
+        const { happened, todo, quoted, after } = lineOf(cards[0]);
+        return `Pending You: ${happened}${quoted ? '' : '.'} ${capital(todo)}.${after ? ` ${after}` : ''}${reopen}`;
     }
     return [
         `Pending You: ${cards.length} of your cards need you.`,
         ...cards.map((card) => {
-            const [happened, todo] = line(card);
-            return `- ${capital(happened)}: ${todo}.`;
+            const { happened, todo, after } = lineOf(card);
+            return `- ${capital(happened)}: ${todo}.${after ? ` ${after}` : ''}`;
         }),
         ...(reopen ? [reopen.trim()] : []),
     ].join('\n');
