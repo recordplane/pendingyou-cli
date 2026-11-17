@@ -28,13 +28,14 @@ export interface Io {
   ask(question: string): Promise<string>
   /**
    * Runs a program without a shell and collects what it printed. Code 127 when it isn't installed, 124 when it ran
-   * past `timeoutMs` (it's stopped). With `env`, the program gets exactly that environment instead of this one's.
+   * past `timeoutMs` (it's stopped). With `env`, the program gets exactly that environment instead of this one's; with
+   * `stdin`, those words on its stdin (the card drafter's turn, never in its arguments); with `cwd`, that folder.
    */
   run(
     command: string,
     args: readonly string[],
     timeoutMs?: number,
-    options?: { env?: Record<string, string> },
+    options?: RunOptions,
   ): Promise<RunResult>
   /**
    * Runs the person's own command for `watch`: no shell, its output passed straight through, `stdin` written to it,
@@ -100,11 +101,18 @@ export interface Io {
   rows?(): number
 }
 
+/** How `run` runs a program (Io's `run`). */
+export interface RunOptions {
+  env?: Record<string, string>
+  stdin?: string
+  cwd?: string
+}
+
 export function runProgram(
   command: string,
   args: readonly string[],
   timeoutMs = 60_000,
-  options: { env?: Record<string, string> } = {},
+  options: RunOptions = {},
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     let stdout = ''
@@ -112,10 +120,11 @@ export function runProgram(
     let child: ReturnType<typeof spawn>
     try {
       child = spawn(command, [...args], {
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [options.stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
         windowsHide: true,
         // Exactly that environment, nothing of this process's.
         ...(options.env ? { env: options.env as NodeJS.ProcessEnv } : {}),
+        ...(options.cwd ? { cwd: options.cwd } : {}),
       })
     } catch {
       resolve({ code: 127, stdout, stderr })
@@ -138,6 +147,10 @@ export function runProgram(
     })
     child.on('error', (error: NodeJS.ErrnoException) => done(error.code === 'ENOENT' ? 127 : 1))
     child.on('close', (code) => done(code ?? 1))
+    if (options.stdin !== undefined) {
+      child.stdin?.on('error', () => {})
+      child.stdin?.end(options.stdin)
+    }
   })
 }
 
