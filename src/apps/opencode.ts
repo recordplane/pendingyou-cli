@@ -18,11 +18,12 @@
 // - Its skill: OpenCode reads ~/.claude/skills and ~/.agents/skills too, so a stub Claude Code's or Codex's init saved
 //   there is enough (a second copy is a duplicate it warns about); otherwise the stub goes in
 //   ~/.config/opencode/skills/pendingyou/SKILL.md.
-// - Its plugin: ~/.config/opencode/plugins/pendingyou.js, one line re-exporting the plugin from this version's private
-//   copy (apps/opencode-plugin.ts). OpenCode loads every file there at startup and calls every export. The plugin hands
-//   answers over, runs the Stop check and wakes a session, all through the hooks' shim.
+// - Its plugin: ~/.config/opencode/plugins/pendingyou.js, one line re-exporting the plugin's default export from this
+//   version's private copy (apps/opencode-plugin.ts; 0.44.0, `PendingYou` before). OpenCode loads every file there at
+//   startup: 1.x calls the default's `server`, 2.x its `setup`. The plugin hands answers over, runs the Stop check and
+//   wakes a session, all through the hooks' shim. status reads 2.x's log for whether it loaded.
 
-import { mkdir, rm, rmdir, stat } from 'node:fs/promises'
+import { mkdir, open, rm, rmdir, stat } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
@@ -261,25 +262,140 @@ export function toolPermission(value: unknown): { action: string; key: string | 
   return found
 }
 
-/** The one-line plugin file: Pending You's plugin from this version's private copy, re-exported as it is. */
+/**
+ * The one-line plugin file: Pending You's plugin from this version's private copy, its default export re-exported
+ * (0.44.0), which OpenCode 1.x and 2.x both load (opencode-plugin.ts). Before 0.44.0 the line re-exported `PendingYou`,
+ * which only 1.x loads.
+ */
 export function pluginFile(module: string): string {
   return `// Pending You for OpenCode: hands it your answers, wakes a session when you answer, and asks it to put what it
 // leaves you in chat on a card. Written by npx pendingyou init (pendingyou ${VERSION}); run that again to repair it.
-export { PendingYou } from ${JSON.stringify(pathToFileURL(module).href)}
+export { default } from ${JSON.stringify(pathToFileURL(module).href)}
 `
 }
 
-/** The module a plugin file of ours points at; null for a file that isn't ours. */
+const PLUGIN_LINE =
+  /^export \{ (default|PendingYou) \} from "(file:\/\/[^"]+\/node_modules\/pendingyou\/dist\/apps\/opencode-plugin\.js)"$/m
+
+/** The module a plugin file of ours points at (either line, 0.44.0's or an older one); null for a file that isn't ours. */
 export function pluginTarget(text: string): string | null {
-  const found =
-    /^export \{ PendingYou \} from "(file:\/\/[^"]+\/node_modules\/pendingyou\/dist\/apps\/opencode-plugin\.js)"$/m.exec(
-      text,
-    )
+  const found = PLUGIN_LINE.exec(text)
   if (!found) return null
   try {
-    return fileURLToPath(found[1] as string)
+    return fileURLToPath(found[2] as string)
   } catch {
     return null
+  }
+}
+
+/** Whether a plugin file of ours is the line from before 0.44.0, which re-exports `PendingYou`: OpenCode 2.x refuses it. */
+export function pluginLineIsOld(text: string): boolean {
+  return PLUGIN_LINE.exec(text)?.[1] === 'PendingYou'
+}
+
+/** OpenCode 2.x's log, where it says which plugins it loaded: $XDG_DATA_HOME/opencode/log/opencode.log. */
+export const opencodeLogPath = (io: Pick<Io, 'env' | 'home'>) =>
+  join(io.env.XDG_DATA_HOME || join(io.home, '.local', 'share'), 'opencode', 'log', 'opencode.log')
+
+/** How much of the end of OpenCode's log status reads. */
+const LOG_TAIL = 2_000_000
+
+/**
+ * What OpenCode runs of the plugin, by its version (read in 1.17.0 to 2.3.2's source; 0.44.0):
+ * - `v1`: 1.x, all of it, through `server`.
+ * - `wake` (2.0.0 to 2.2.0): the wake and presence only. Its `context` hook doesn't see a message's stored metadata
+ *   (that came in 2.3.0, session/model-request.ts), so the hand-off never reaches the model, and it has no
+ *   `experimental.idle` (2.2.1), so no Stop check.
+ * - `stopcheck` (2.2.1 to 2.2.x): the wake, presence and the Stop check, not the hand-off.
+ * - `all` (2.3.0 and later).
+ */
+export type OpenCodeTier = 'v1' | 'wake' | 'stopcheck' | 'all'
+
+export function opencodeTier(version: string | undefined): OpenCodeTier {
+  const found = /^(\d+)\.(\d+)\.(\d+)/.exec(version ?? '')
+  if (!found) return 'all'
+  const [major, minor, patch] = found.slice(1).map(Number) as [number, number, number]
+  if (major < 2) return 'v1'
+  if (major > 2 || minor >= 3) return 'all'
+  return minor === 2 && patch >= 1 ? 'stopcheck' : 'wake'
+}
+
+/** What an OpenCode older than 2.3.0 doesn't do of the plugin, in words; null when it does all of it. */
+export function tierMisses(tier: OpenCodeTier): string | null {
+  if (tier === 'wake')
+    return 'it doesn’t hand OpenCode your answers and the setup line with your next message (that takes OpenCode 2.3.0), and doesn’t ask it to put what it leaves you in chat on a card (2.2.1)'
+  if (tier === 'stopcheck')
+    return 'it doesn’t hand OpenCode your answers and the setup line with your next message (that takes OpenCode 2.3.0)'
+  return null
+}
+
+/** What OpenCode 2.x's log says of its last load of the plugin file. */
+export type PluginLoad =
+  | { state: 'loaded' }
+  | { state: 'refused'; cause: string; at: number | null }
+  | { state: 'unknown' }
+
+/**
+ * What OpenCode's log says of the last time it loaded the plugin file at `path`. 2.x writes `msg="loading plugin"
+ * id=<path>`, then, when it can't, `message="failed to load plugin" target=<path> … cause="…"`; a value with a space, a
+ * quote or `=` is quoted, `"` and `\` escaped (logfmt). The refusal of the last load comes after its "loading" line, or
+ * just before it with a time no earlier (one start's lines can land out of order); a refusal whose load has gone past
+ * the tail counts too. `unknown` when the tail names the file nowhere. At most 200 characters of its cause, up to its
+ * first quote or parenthesis.
+ */
+export function pluginLoadIn(log: string, path: string): PluginLoad {
+  const forms = [path, `"${path.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`]
+  const names = (line: string, key: string) =>
+    forms.some((form) => line.includes(` ${key}=${form} `) || line.endsWith(` ${key}=${form}`))
+  const timeOf = (line: string) => {
+    const at = Date.parse(/^timestamp=(\S+)/.exec(line)?.[1] ?? '')
+    return Number.isFinite(at) ? at : null
+  }
+  const lines = log.split('\n')
+  let loaded = -1
+  let failed = -1
+  lines.forEach((line, index) => {
+    if (line.includes('"loading plugin"') && names(line, 'id')) loaded = index
+    else if (line.includes('"failed to load plugin"') && names(line, 'target')) failed = index
+  })
+  if (loaded === -1 && failed === -1) return { state: 'unknown' }
+  const loadAt = loaded === -1 ? null : timeOf(lines[loaded] as string)
+  const failAt = failed === -1 ? null : timeOf(lines[failed] as string)
+  const refused =
+    failed !== -1 &&
+    (loaded === -1 || failed > loaded || (loadAt !== null && failAt !== null && failAt >= loadAt))
+  if (!refused) return { state: 'loaded' }
+  const line = lines[failed] as string
+  const after = line.slice(line.indexOf('cause='))
+  const cause = (/Error: ([^"\\(]{1,200})/.exec(after) ??
+    /cause="([^"\\(]{1,200})/.exec(after))?.[1]
+  return {
+    state: 'refused',
+    cause: (cause ?? 'it gave no reason').trim().replace(/\.$/, ''),
+    at: failAt,
+  }
+}
+
+/** The version folder of the private copy a plugin file of ours points at (`<config>/cli/<version>/…`), or null. */
+export function pluginCopyVersion(text: string): string | null {
+  const target = pluginTarget(text)
+  return target ? (/\/cli\/([^/]+)\/node_modules\/pendingyou\//.exec(target)?.[1] ?? null) : null
+}
+
+/** The end of OpenCode's log, or null when there's none. */
+async function logTail(path: string): Promise<string | null> {
+  let file: Awaited<ReturnType<typeof open>> | undefined
+  try {
+    file = await open(path, 'r')
+    const { size } = await file.stat()
+    const length = Math.min(size, LOG_TAIL)
+    const buffer = Buffer.alloc(length)
+    await file.read(buffer, 0, length, size - length)
+    return buffer.toString('utf8')
+  } catch {
+    return null
+  } finally {
+    await file?.close().catch(() => {})
   }
 }
 
@@ -618,6 +734,14 @@ export const opencode: AppModule = {
           report(saved.step)
         }
         const plugin = await addPlugin(io, ictx, report)
+        // OpenCode 2.0.0 to 2.2.x runs only part of it (opencodeTier): say what, and what fixes it.
+        const misses = plugin ? tierMisses(opencodeTier(detected.version)) : null
+        // A note, not a failure: it's set up, and the rest comes with OpenCode's own update.
+        if (misses)
+          report({
+            ok: true,
+            text: `OpenCode ${detected.version} runs the plugin only in part: it wakes a session when you answer, but ${misses}. Update OpenCode to 2.3.0 or later, then restart it.`,
+          })
         const manifest: OpenCodeManifest = {
           version: 1,
           origin: ictx.origin,
@@ -818,17 +942,47 @@ export const opencode: AppModule = {
         : `${check.why}; run ${init}`
       : null
     const bridgeOk = !check || (check.ok && reached === null)
-    const pluginText = await readText(opencodePluginPath(io)).catch(() => null)
+    const pluginPath = opencodePluginPath(io)
+    const pluginText = await readText(pluginPath).catch(() => null)
     const target = pluginText === null ? null : pluginTarget(pluginText)
-    const pluginOk = target !== null && (await exists(target))
+    const copied = target !== null && (await exists(target))
+    // OpenCode 2.x loads only a default export (0.44.0's line): the line from before it, it refuses.
+    const tier = opencodeTier(detected?.version)
+    const v2 = detected !== null && tier !== 'v1'
+    const oldLine = pluginText !== null && pluginLineIsOld(pluginText) && v2
+    // What 2.x's log says of its last load of the file. 1.x logs elsewhere, one file a run, and an old 2.x log says
+    // nothing of a 1.x OpenCode: read only for 2.x.
+    const logPath = opencodeLogPath(io)
+    const load: PluginLoad | null =
+      copied && !oldLine && v2 ? pluginLoadIn((await logTail(logPath)) ?? '', pluginPath) : null
+    const written =
+      load?.state === 'refused'
+        ? await stat(pluginPath).then(
+            (info) => info.mtimeMs,
+            () => 0,
+          )
+        : 0
+    const unsure = load?.state === 'unknown'
+    const pluginOk = copied && !oldLine && (load === null || load.state === 'loaded')
+    const misses = pluginOk ? tierMisses(tier) : null
     const pluginLine =
       pluginText === null
         ? `not added; run ${init}`
         : target === null
-          ? `${opencodePluginPath(io)} isn’t the one init writes; move it, then run ${init}`
-          : pluginOk
-            ? `${opencodePluginPath(io)}: hands OpenCode your answers, wakes a session when you answer, and asks it to put what it leaves you in chat on a card`
-            : `points at a copy of pendingyou that’s gone (${target}); run ${init}`
+          ? `${pluginPath} isn’t the one init writes; move it, then run ${init}`
+          : !copied
+            ? `points at a copy of pendingyou that’s gone (${target}); run ${init}`
+            : oldLine
+              ? `${pluginPath} is from a pendingyou before 0.44.0, which OpenCode ${detected?.version} doesn’t load, so it isn’t woken when you answer; run ${init}, then restart OpenCode`
+              : load?.state === 'refused'
+                ? load.at !== null && written > load.at
+                  ? `OpenCode couldn’t load it when it last started (${load.cause}); restart OpenCode to load the one init wrote since`
+                  : `OpenCode couldn’t load it (${load.cause}); run ${init}, then restart OpenCode`
+                : unsure
+                  ? `${pluginPath}, but OpenCode’s log (${logPath}) doesn’t show it loaded it, so that couldn’t be confirmed; start or restart OpenCode, then run status again`
+                  : misses
+                    ? `${pluginPath}: wakes a session when you answer, but OpenCode ${detected?.version} runs it only in part: ${misses}; update OpenCode to 2.3.0 or later, then restart it`
+                    : `${pluginPath}: hands OpenCode your answers, wakes a session when you answer, and asks it to put what it leaves you in chat on a card`
     const shared = await sharedSkill(io)
     const own = (await readText(opencodeSkillPath(io)).catch(() => null)) !== null
     const lines = [
@@ -837,7 +991,7 @@ export const opencode: AppModule = {
       `  ${mark(detected !== null)} OpenCode: ${detected?.version ?? 'not found on PATH'}`,
       `  ${mark(mcpOk)} MCP server: ${mcpText}`,
       ...(bridgeLine ? [`  ${mark(bridgeOk)} Bridge: ${bridgeLine}`] : []),
-      `  ${mark(pluginOk)} Plugin: ${pluginLine}`,
+      `  ${unsure ? 'unsure ' : misses ? 'partly ' : mark(pluginOk)} Plugin: ${pluginLine}`,
       `  ${mark(own || shared !== null)} Skill: ${own ? `saved (${opencodeSkillPath(io)})` : shared ? `OpenCode reads the one at ${shared}` : `not saved; run ${init}`}`,
       // Presence (0.15.0): the plugin says when a session is open, with this computer's own connection.
       connected && pluginOk
@@ -850,10 +1004,14 @@ export const opencode: AppModule = {
     const ready = reaches && signIn.state === 'ok' && mcpOk && pluginOk
     lines.push(
       ready
-        ? 'Ready: OpenCode hears answers right away (report_setup hears "instant").'
-        : reaches && mcpOk
-          ? 'Not ready: OpenCode hears answers only while it’s working until the lines marked missing are fixed.'
-          : 'Not ready: OpenCode here can’t reach Pending You until the lines marked missing are fixed.',
+        ? misses
+          ? `Ready in part: OpenCode ${detected?.version} is woken when you answer (report_setup hears "instant"), but not all of Pending You works on it; update OpenCode to 2.3.0 or later.`
+          : 'Ready: OpenCode hears answers right away (report_setup hears "instant").'
+        : unsure && reaches && mcpOk && signIn.state === 'ok'
+          ? 'Not confirmed: OpenCode’s log doesn’t show it loaded the plugin, so whether it’s woken when you answer isn’t known; start or restart OpenCode, then run status again.'
+          : reaches && mcpOk
+            ? 'Not ready: OpenCode hears answers only while it’s working until the lines marked missing are fixed.'
+            : 'Not ready: OpenCode here can’t reach Pending You until the lines marked missing are fixed.',
     )
     return { lines, ready }
   },

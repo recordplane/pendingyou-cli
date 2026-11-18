@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.44.0 (2026-11-18)
+
+- **OpenCode 2.x: Pending You's plugin loads again.** OpenCode 2.0.0 and later refused the plugin that `init` wrote
+  ("failed to load plugin" in OpenCode's log), so an OpenCode 2.x session was never woken when you answered, its next
+  message didn't carry your answers, and nothing asked it to put what it left you in chat on a card. Its MCP server
+  worked, so setup looked fine, and `status` wrongly said "OpenCode hears answers right away". If you use OpenCode 2.x,
+  run `npx -y pendingyou@latest init` (all your agents, or `--app opencode`); an open OpenCode loads the new plugin by
+  itself, or restart it. What each OpenCode runs:
+  - OpenCode 1.x (1.17.0 and later) and **2.3.0 and later**: all of it.
+  - 2.2.1 to 2.2.x: it's woken when you answer and asked to put what it leaves you in chat on a card, but your next
+    message doesn't carry your answers and the setup line (that takes 2.3.0).
+  - 2.0.0 to 2.2.0: it's woken when you answer, and nothing more.
+  - On 2.0.0 to 2.2.x, `init` and `status` say so; update OpenCode to 2.3.0 or later for the rest.
+- In OpenCode 2.x the hand-off goes to the model only: your message shows your own words, and the session's title
+  isn't made from it.
+- `status` says OpenCode hears answers right away only when OpenCode's own log shows it loaded the plugin. It says
+  when OpenCode refused it and why, when an open OpenCode needs a restart for the plugin `init` just wrote, and that it
+  couldn't confirm when the log doesn't mention it.
+- When `init` rewrites the plugin with OpenCode 2.x open, the sessions it had open stay open in Pending You and keep
+  listening; and as OpenCode starts, its sessions with cards waiting listen again.
+- A card an OpenCode 2.x turn posts while you type another message counts for that turn, so it isn't asked to put the
+  same thing on a card again.
+- `init` never removes the copy of pendingyou OpenCode's plugin runs from.
+
 ## 0.43.3 (2026-11-17)
 
 - An assistant in the middle of a long task when you answer is told at its next tool call, once, in one line, instead

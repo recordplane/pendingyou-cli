@@ -9,6 +9,7 @@
 // connection already signed in proves it with its own sign-in (POST /mcp/cli/machine), with nothing to approve. So a
 // computer set up before 0.18.0 gets its key on its next init; its assistants' sign-ins stay exactly as they were.
 import { APP_IDS, type AppId, DEFAULT_APP, namesOf } from './apps/ids.ts'
+import { opencodePluginPath, pluginCopyVersion } from './apps/opencode.ts'
 import { APPS, appModule, atLeast } from './apps/registry.ts'
 import type {
   AppContext,
@@ -22,6 +23,7 @@ import type {
 import { bridgeCommand, removeBridge, writeBridge } from './bridge.ts'
 import { hookCommand } from './claude.ts'
 import { readCredential, saveConnectionClient } from './credentials.ts'
+import { readText } from './files.ts'
 import { hookLine, originArgs } from './hooks.ts'
 import { type Installed, installCli, pruneCli, removeCli } from './install.ts'
 import type { Io } from './io.ts'
@@ -289,8 +291,12 @@ export async function init(io: Io, options: InitOptions): Promise<number> {
       app.installed(io),
     ),
   )
-  if (!io.env.PENDINGYOU_SELF && !others.some(Boolean))
-    await pruneCli(io, shared.copy?.version ?? null)
+  if (!io.env.PENDINGYOU_SELF && !others.some(Boolean)) {
+    // The copy OpenCode's plugin line points at stays (0.44.0): OpenCode 2.x would unload the plugin with it.
+    const line = await readText(opencodePluginPath(io)).catch(() => null)
+    const pinned = line === null ? null : pluginCopyVersion(line)
+    await pruneCli(io, shared.copy?.version ?? null, pinned ? [pinned] : [])
+  }
   // Hooks the app runs only once they're trusted there (Codex): how, and the wait for it, before what comes next.
   for (const { each } of installed) await trustHooks(io, each.app, options.origin)
   const nexts: NextStep[] = []

@@ -173,9 +173,15 @@ const VERSION_NAME = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
 /**
  * Removes the private copies the hooks no longer run, and leftovers: every one but `keep` and the newest other version
  * (0.23.0). Before 0.23.0 Claude Code loaded the wake mod from inside a copy, and a session keeps the folder it loaded
- * until it restarts: removing that copy with the upgrade left it with no mod at all (seen 2026-10-06).
+ * until it restarts: removing that copy with the upgrade left it with no mod at all (seen 2026-10-06). `pinned` are
+ * kept too (0.44.0): the copy OpenCode's plugin line points at, which OpenCode 2.x watches, so removing it would unload
+ * the plugin at once, when an init didn't rewrite that line.
  */
-export async function pruneCli(io: Pick<Io, 'env' | 'home'>, keep: string | null): Promise<void> {
+export async function pruneCli(
+  io: Pick<Io, 'env' | 'home'>,
+  keep: string | null,
+  pinned: readonly string[] = [],
+): Promise<void> {
   const root = cliRoot(io)
   const entries = await readdir(root).catch(() => [] as string[])
   const previous = entries
@@ -183,7 +189,7 @@ export async function pruneCli(io: Pick<Io, 'env' | 'home'>, keep: string | null
     .sort(byVersion)
     .at(-1)
   for (const entry of entries)
-    if (entry !== keep && entry !== previous)
+    if (entry !== keep && entry !== previous && !pinned.includes(entry))
       await rm(join(root, entry), { recursive: true, force: true }).catch(() => {})
 }
 
