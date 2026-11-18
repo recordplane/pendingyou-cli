@@ -494,6 +494,10 @@ export async function pickup(
       // Only this session's own answers and open cards (0.25.0).
       ...asker.params,
     ])
+    // From here, whatever stops the hook before its request answers (its deadline, counted from the process's start,
+    // can come first on a slow computer) leaves it unchecked: the fallback says so, as a request that failed does.
+    if (mode === 'handoff' || (await readCredential(io, origin, app)) !== null)
+      hook.fallback = `${[line, UNCHECKED, warning].filter(Boolean).join('\n')}\n`
     const { status, body } = await getJson<{
       ok?: boolean
       requests?: Heard[]
