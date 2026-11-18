@@ -586,6 +586,7 @@ export type Presentation = {
     title: Line
     meta: Line[]
   }
+  conversation?: Conversation
   fallback: {
     line: Line
     path: string
@@ -649,6 +650,29 @@ export type PresentationSteps = {
   }[]
 }
 
+export type Conversation = {
+  shown: number
+  earlier?: Line
+  newBefore?: string
+  left?: number
+  leftLine?: Line
+  items: ConversationItem[]
+}
+
+export type ConversationItem = {
+  id: string
+  side: "you" | "assistant" | "note" | (string & {})
+  at: string
+  head?: {
+    who?: Line
+    time?: Line
+  }
+  day?: Line
+  words?: Line
+  attachmentIds?: string[]
+  via?: "voice" | "text" | (string & {})
+}
+
 export type Line = {
   key: string
   args?: {
@@ -659,7 +683,8 @@ export type Line = {
 
 export type LineArg = string | number | {
   time: string
-  as: "clock" | "duration" | "ago" | "until" | "day" | (string & {})
+  as: "clock" | "duration" | "ago" | "until" | "day" | "date" | (string & {})
+  zone?: string
 } | {
   key: string
 }
@@ -792,6 +817,11 @@ export type WebHandoff = {
   url: string
   expiresAt: string
   path: string
+}
+
+export type TimeZone = {
+  timeZone: string
+  changed: boolean
 }
 
 export type ChangeList = {
@@ -1069,6 +1099,10 @@ export type StepsRequest = {
 
 export type WebHandoffRequest = {
   path: string
+}
+
+export type TimeZoneRequest = {
+  timeZone: string
 }
 
 export type ChangesQuery = {
