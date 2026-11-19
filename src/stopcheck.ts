@@ -54,7 +54,7 @@
 // say it doesn't need one (STEP_NOW_REASON, step-now.ts). After the ask to type here and before the card-posted check,
 // so neither a card about something else nor a recap ends the turn; with no request.
 //
-// Since 2026-11-19 (the first live runs: Pi 1.5.2 ended its reply with “Should the next file be called alpha.txt or
+// Since 0.44.1 (the first live runs, 2026-11-18: Pi 1.5.2 ended its reply with “Should the next file be called alpha.txt or
 // beta.txt?” and settled, since that question doesn't say “you”) a reply whose last sentence is a question is asking
 // the person too (endsOnQuestion): code, block quotes, quoted strings, recaps and a closing aside in parentheses left
 // out, so a question it goes on to answer, one it quotes and one it only thinks aloud never count. And a reply whose
@@ -250,7 +250,7 @@ function lastSentence(plain: string): string {
 }
 
 /**
- * Whether the reply ends on a question (2026-11-19): its last sentence, outside code, block quotes, quoted strings and a
+ * Whether the reply ends on a question (0.44.1): its last sentence, outside code, block quotes, quoted strings and a
  * closing aside, ends with "?". "Should the next file be called alpha.txt or beta.txt?", "Shall I go ahead?". Not "Why
  * did it fail? The token had expired.": a question it goes on to answer isn't its last.
  */
@@ -258,7 +258,7 @@ export const endsOnQuestion = (text: string) => lastSentence(plainText(text)).en
 
 /**
  * The questions in the plain text that are the person's to answer: each sentence that ends with "?" and says "you", and
- * (2026-11-19) the last, when it's a question.
+ * (0.44.1) the last, when it's a question.
  */
 function questionsIn(plain: string): string[] {
   const found = plain
@@ -291,7 +291,7 @@ const ASKING = new Set([
 const tellingOf = (text: string) => telling(text).filter((word) => !ASKING.has(word))
 
 /**
- * Whether a question is one an open card asks already (2026-11-19): two or more of the words that tell one apart
+ * Whether a question is one an open card asks already (0.44.1): two or more of the words that tell one apart
  * (tellingOf), every one of them in the other. “Still waiting: which DNS host for the new domain?” and “Which DNS host do
  * you want?” are the card “Which DNS host for the new domain?”; “Which do you want?” says too little to be any card.
  */
@@ -866,7 +866,7 @@ export async function stopcheck(io: Io, options: { origin: string; app?: AppId }
       open = await openTitles(io, options.origin, cwd, app, session)
       if (open === null || open.some((title) => !isPermissionCard(title))) return 0
     }
-    // Only questions (2026-11-19): each one already on one of this session's open cards ends the turn. Not known in
+    // Only questions (0.44.1): each one already on one of this session's open cards ends the turn. Not known in
     // time (offline, slow): let it end too.
     if (items === 'question') {
       open ??= await openTitles(io, options.origin, cwd, app, session, 'none')

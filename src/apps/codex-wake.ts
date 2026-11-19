@@ -517,7 +517,7 @@ function newName(thread: Thread | undefined, name: string | undefined): string |
 }
 
 /**
- * A session its app says is open that has just said its name (2026-11-19): live again now, with that name. Pending You
+ * A session its app says is open that has just said its name (0.44.1): live again now, with that name. Pending You
  * matches a session's presence to its agent by name, and a session says live as it starts, before it has said one, so
  * until its next heartbeat (5 minutes) Pending You didn't show the agent running (2026-11-18, the first live runs: an
  * OpenCode session that had just called whoami wasn't on /v1/assistants). Only one whose last word here was live: a

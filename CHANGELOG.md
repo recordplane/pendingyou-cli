@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.44.1 (2026-11-19)
+
+Found by the first live tests of Codex 0.170.0, OpenCode 2.3.2 and Pi 1.5.2.
+
+- **A reply on an open card wakes Pi and OpenCode.** When you wrote back on a card (“Before I answer: how long can it
+  be?”) while a Pi or OpenCode session sat idle, nothing woke it: it heard your words only with your next message. The
+  session's listener read its cards before each wait for news, so a card posted during that wait, and written on
+  before it ended, was missed for good. The same could happen to an answer, less often, and to Codex on a second card
+  posted while the first one's listener ran. A question you hand a session was never affected.
+- **A reply that ends on a question reaches you as a card.** An assistant that ended on “Should the next file be
+  called alpha.txt or beta.txt?” settled with the question only in chat: the check that puts what an assistant leaves
+  you in chat on a card counted a question only when it said “you”. Now a reply whose last sentence is a question
+  counts, in every app (Claude Code, Codex, OpenCode and Pi), outside code, quotes and a closing aside in parentheses,
+  and not a question it goes on to answer itself.
+- **A question already on one of the session's open cards no longer nags.** When all a reply leaves you is questions
+  and each is one of the session's open cards (“Still waiting: which DNS host for the new domain?”), the assistant
+  isn't asked to post it again. It asks Pending You for those cards (1.5 seconds at most); when Pending You can't say
+  in time, it lets the reply stand. The words an assistant is asked with are unchanged.
+- **An assistant shows as running as soon as it has a name.** A session said it was open before it had said its name,
+  and Pending You knows a session's agent by its name, so a new Pi, OpenCode or Codex session wasn't shown running for
+  up to 5 minutes after it introduced itself. Now it says so again, with its name, the moment it gives one.
+- After `npx -y pendingyou@latest init`: restart Pi (or `/reload` in it) and OpenCode 1.x so their listeners run the
+  new version; OpenCode 2.x reloads the plugin by itself. A Codex thread's listener runs the new version the next
+  time one starts (when it has no card left, or after 8 hours, it stops). Nothing to restart for the rest: the check
+  on a reply's last words and the name sent with a session's presence run the new version at once.
+
 ## 0.44.0 (2026-11-18)
 
 - **OpenCode 2.x: Pending You's plugin loads again.** OpenCode 2.0.0 and later refused the plugin that `init` wrote
