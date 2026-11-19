@@ -53,6 +53,13 @@
 // carries it (its words hold the step's link, or two of its words), the agent is asked once to put it on a card, or to
 // say it doesn't need one (STEP_NOW_REASON, step-now.ts). After the ask to type here and before the card-posted check,
 // so neither a card about something else nor a recap ends the turn; with no request.
+//
+// Since 2026-11-19 (the first live runs: Pi 1.5.2 ended its reply with “Should the next file be called alpha.txt or
+// beta.txt?” and settled, since that question doesn't say “you”) a reply whose last sentence is a question is asking
+// the person too (endsOnQuestion): code, block quotes, quoted strings, recaps and a closing aside in parentheses left
+// out, so a question it goes on to answer, one it quotes and one it only thinks aloud never count. And a reply whose
+// questions are all on this session's open cards already ends the turn, whichever rule found them: it asks for the
+// open cards' titles (the same request and 1.5 seconds), and ends the turn when it can't say in time.
 import { open } from 'node:fs/promises'
 import { getJson } from './api.ts'
 import { codexSeesAnswers } from './apps/codex.ts'
@@ -61,7 +68,7 @@ import { markNudged, turnRecord } from './apps/codex-wake.ts'
 import { APP_NAMES, type AppId, DEFAULT_APP } from './apps/ids.ts'
 import { DEFAULT_ORIGIN } from './args.ts'
 import { asksQuestion, wordsOf } from './asked.ts'
-import { asksToTypeHere, cardFits, confirmReason, sessionLink } from './confirm.ts'
+import { asksToTypeHere, cardFits, confirmReason, sessionLink, telling } from './confirm.ts'
 import { readCredential } from './credentials.ts'
 import { isHandedWake } from './format.ts'
 import type { Io } from './io.ts'
@@ -213,10 +220,91 @@ function itemsIn(plain: string): 'question' | 'steps' | 'list' | null {
     if (next && LIST_ITEM.test(next)) return 'list'
   }
   if (STEPS_FOR_THEM.test(plain)) return 'steps'
-  for (const sentence of plain.split(/(?<=[.!?])\s+|\n/))
-    if (sentence.trim().endsWith('?') && YOU.test(sentence)) return 'question'
-  return null
+  return questionsIn(plain).length ? 'question' : null
 }
+
+/** A sentence's end as it's read for a "?": the Markdown emphasis after it (`**beta.txt**?**`) left out. */
+const sentenceEnd = (sentence: string) => sentence.trim().replace(/[*_\s]+$/, '')
+
+/**
+ * The last sentence of the plain text (plainText's), with a closing aside in parentheses left out ("Done. (Remember the
+ * Tuesday thing?)" ends on "Done."), or '' for none.
+ */
+function lastSentence(plain: string): string {
+  let text = plain.trim()
+  for (
+    let aside = /\s*\([^()]*\)[\s*_]*$/.exec(text);
+    aside;
+    aside = /\s*\([^()]*\)[\s*_]*$/.exec(text)
+  ) {
+    const before = text.slice(0, aside.index).trim()
+    if (!before) break
+    text = before
+  }
+  const line =
+    text
+      .split('\n')
+      .filter((each) => each.trim())
+      .at(-1) ?? ''
+  return sentenceEnd(line.split(SENTENCE_END).at(-1) ?? '')
+}
+
+/**
+ * Whether the reply ends on a question (2026-11-19): its last sentence, outside code, block quotes, quoted strings and a
+ * closing aside, ends with "?". "Should the next file be called alpha.txt or beta.txt?", "Shall I go ahead?". Not "Why
+ * did it fail? The token had expired.": a question it goes on to answer isn't its last.
+ */
+export const endsOnQuestion = (text: string) => lastSentence(plainText(text)).endsWith('?')
+
+/**
+ * The questions in the plain text that are the person's to answer: each sentence that ends with "?" and says "you", and
+ * (2026-11-19) the last, when it's a question.
+ */
+function questionsIn(plain: string): string[] {
+  const found = plain
+    .split(/(?<=[.!?])\s+|\n/)
+    .map(sentenceEnd)
+    .filter((sentence) => sentence.endsWith('?') && YOU.test(sentence))
+  const last = lastSentence(plain)
+  return last.endsWith('?') && !found.includes(last) ? [...found, last] : found
+}
+
+/** Words a question says to whoever it asks, which no card's title needs: “Which DNS host do you want me to use?”. */
+const ASKING = new Set([
+  'you',
+  'your',
+  'want',
+  'do',
+  'does',
+  'i',
+  'me',
+  'we',
+  'us',
+  'should',
+  'shall',
+  'would',
+  'like',
+  'to',
+  'use',
+])
+/** The words of a question or a title that tell it apart (confirm.ts's `telling`), with ASKING's left out. */
+const tellingOf = (text: string) => telling(text).filter((word) => !ASKING.has(word))
+
+/**
+ * Whether a question is one an open card asks already (2026-11-19): two or more of the words that tell one apart
+ * (tellingOf), every one of them in the other. “Still waiting: which DNS host for the new domain?” and “Which DNS host do
+ * you want?” are the card “Which DNS host for the new domain?”; “Which do you want?” says too little to be any card.
+ */
+export function onCard(question: string, title: string): boolean {
+  const asked = tellingOf(question)
+  const titled = tellingOf(title)
+  const within = (part: string[], whole: string[]) =>
+    part.length >= 2 && part.every((word) => whole.includes(word))
+  return within(titled, asked) || within(asked, titled)
+}
+
+/** The questions for the person outside its recaps (questionsIn), as the Stop check matches them to open cards. */
+export const questionsOutsideRecaps = (text: string) => questionsIn(withoutRecaps(plainText(text)))
 
 /**
  * What in the final text is for the person, or null: `list` (a list under a heading like "Your part:"), `steps`
@@ -598,6 +686,8 @@ async function openTitles(
   cwd: string,
   app: AppId,
   session: { id: string | null; transcript: string | null },
+  /** What an answer with no list means: not known (null), or (the questions' check) none to match. */
+  unlisted: 'unknown' | 'none' = 'unknown',
 ): Promise<string[] | null> {
   try {
     const name =
@@ -617,8 +707,9 @@ async function openTitles(
       io.signal,
       { hook: true, app },
     )
-    const requests = status === 200 ? body.open?.requests : undefined
-    if (!Array.isArray(requests)) return null
+    if (status !== 200) return null
+    const requests = body.open?.requests
+    if (!Array.isArray(requests)) return unlisted === 'none' ? [] : null
     return requests.flatMap((card: { title?: unknown } | null) =>
       typeof card?.title === 'string' ? [card.title] : [],
     )
@@ -765,13 +856,28 @@ export async function stopcheck(io: Io, options: { origin: string; app?: AppId }
     if (turn.posted || saysPosted(text) || saysNoCard(text)) return 0
     // Their own question, answered only in chat (0.36.0, guide 2.54): the answer goes on a card too.
     if (turn.asked && isAnswer(text) && (await seesAnswers(io, app))) return block(ANSWER_REASON)
-    if (!itemsOutsideRecaps(text)) return 0
+    const items = itemsOutsideRecaps(text)
+    if (!items) return 0
     // Something for them outside any recap (0.19.0). A message that talks about cards may be recapping ones already
     // open in words no pattern knows: asked only then, any card of this folder's still waiting on them (not a
     // permission prompt's, which the hooks post) says it is. Not known (offline, slow, an older server): let it end.
+    let open: string[] | null | undefined
     if (mentionsCards(text)) {
-      const open = await openTitles(io, options.origin, cwd, app, session)
+      open = await openTitles(io, options.origin, cwd, app, session)
       if (open === null || open.some((title) => !isPermissionCard(title))) return 0
+    }
+    // Only questions (2026-11-19): each one already on one of this session's open cards ends the turn. Not known in
+    // time (offline, slow): let it end too.
+    if (items === 'question') {
+      open ??= await openTitles(io, options.origin, cwd, app, session, 'none')
+      if (open === null) return 0
+      const titles = open
+      const asked = questionsOutsideRecaps(text)
+      if (
+        asked.length &&
+        asked.every((question) => titles.some((title) => onCard(question, title)))
+      )
+        return 0
     }
     return block(STOP_REASON)
   } catch {

@@ -95,6 +95,7 @@ import {
 import type { Io } from '../io.ts'
 import { linkSoon } from '../link.ts'
 import type { MidTurnItem } from '../midturn.ts'
+import { presenceArgs, readSaid } from '../presence.ts'
 import { macName, tailscaleName } from '../remote.ts'
 import { claimHanded, markHanded, momentOf, releaseHanded, wasHanded } from '../state.ts'
 import { findCodex } from './codex-app.ts'
@@ -409,7 +410,9 @@ export async function posted(io: Io, options: { origin: string; app: AppId }): P
     const cwd = text(input.cwd, 1000)
     const now = io.now()
     const pane = await herdrTarget(io)
+    let renamed = null as string | null
     await change(io, app, (state) => {
+      renamed = newName(state.threads[thread], nameOf(args))
       if (turn && call !== 'cancel_request') {
         const record = state.turns[turn] ?? { at: now, cards: [] }
         record.cards = [...record.cards, wordsIn(args)].slice(-10)
@@ -455,6 +458,7 @@ export async function posted(io: Io, options: { origin: string; app: AppId }): P
     })
     // The pane's badges, in the background: Codex waits for this hook, and nothing here waits on Herdr.
     if (pane) io.background(reportCommand(app, { session: thread, at: now }))
+    if (renamed) await liveByName(io, options, thread, renamed, cwd, now)
     if (app === 'codex') await keepListening(io, options.origin, thread)
     return 0
   } catch {
@@ -486,7 +490,9 @@ async function named(
   const cwd = text(input.cwd, 1000)
   const now = io.now()
   const pane = await herdrTarget(io)
+  let renamed = null as string | null
   await change(io, app, (state) => {
+    renamed = newName(state.threads[thread], name)
     const known = withName(
       state.threads[thread] ?? { origin: options.origin, cards: {}, at: now },
       name,
@@ -498,8 +504,46 @@ async function named(
     state.threads[thread] = known
   })
   if (pane) io.background(reportCommand(app, { session: thread, at: now }))
+  if (renamed) await liveByName(io, options, thread, renamed, cwd, now)
   if (app === 'codex') await keepListening(io, options.origin, thread)
   return 0
+}
+
+/** The name a call gives the thread when it isn't the one it goes by now (its newest), or null. */
+function newName(thread: Thread | undefined, name: string | undefined): string | null {
+  if (!name) return null
+  const now = thread?.names?.at(-1)
+  return now && goesBy([now], name) ? null : name
+}
+
+/**
+ * A session its app says is open that has just said its name (2026-11-19): live again now, with that name. Pending You
+ * matches a session's presence to its agent by name, and a session says live as it starts, before it has said one, so
+ * until its next heartbeat (5 minutes) Pending You didn't show the agent running (2026-11-18, the first live runs: an
+ * OpenCode session that had just called whoami wasn't on /v1/assistants). Only one whose last word here was live: a
+ * call never says a closed session is open. In the background: the hook never waits on it.
+ */
+async function liveByName(
+  io: Io,
+  options: { origin: string; app: AppId },
+  thread: string,
+  name: string,
+  cwd: string | undefined,
+  at: number,
+): Promise<void> {
+  try {
+    if (io.platform === 'win32') return
+    if ((await readSaid(io, options.app))[thread]?.state !== 'live') return
+    io.background(
+      presenceArgs(options.origin, options.app, {
+        state: 'live',
+        session: thread,
+        name,
+        ...(cwd ? { cwd } : {}),
+        at,
+      }),
+    )
+  } catch {}
 }
 
 /** Whether a post_request was also asked in the conversation (its askedFirst, an object or the same as JSON text). */
@@ -1147,10 +1191,10 @@ export async function listen(
       }
       const waiting = app === 'codex' && (await hasHeard(io, thread))
       const record = (await load(io, app)).threads[thread]
-      const cards = record?.cards ?? {}
       if (
         !waiting &&
-        (!record || (Object.keys(cards).length === 0 && !(takes && mayBeHanded(record, io.now()))))
+        (!record ||
+          (Object.keys(record.cards).length === 0 && !(takes && mayBeHanded(record, io.now()))))
       )
         return 0
       if (!(await renew(io, app, thread, lease))) return 0
@@ -1181,6 +1225,10 @@ export async function listen(
         continue
       }
       for (const heard of requests) if (!since || heard.changedAt > since) since = heard.changedAt
+      // The thread's cards as they are now, not as they were when the poll began (2026-11-18): a card posted during
+      // the poll, and answered or written on before it ended, comes back in it, and `since` has just moved past it.
+      // Read before the poll, it was a card this listener didn't know, skipped and never asked for again.
+      const cards = (await load(io, app)).threads[thread]?.cards ?? {}
       const ready: { heard: Heard; card: ThreadCard }[] = []
       const done: string[] = []
       for (const heard of requests) {
