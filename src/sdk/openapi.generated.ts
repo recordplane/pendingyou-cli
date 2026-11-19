@@ -781,6 +781,16 @@ export type EmailFace = {
   }[]
 }
 
+export type NewReplyRow = {
+  cardId: string
+  areaId: string
+  report?: true
+  head: Line
+  time: Line
+  preview: Line
+  about: Line
+}
+
 export type Line = {
   key: string
   args?: {
@@ -791,7 +801,7 @@ export type Line = {
 
 export type LineArg = string | number | {
   time: string
-  as: "clock" | "duration" | "ago" | "until" | "day" | "date" | (string & {})
+  as: "clock" | "duration" | "ago" | "until" | "day" | "date" | "since" | (string & {})
   zone?: string
 } | {
   key: string
@@ -831,6 +841,8 @@ export type Snapshot = {
   areas: Area[]
   groups: AreaGroup[]
   notify?: NotifySettings
+  newReplies?: NewReplyRow[]
+  newRepliesLine?: Line
 }
 
 export type Area = {
