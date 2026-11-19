@@ -782,6 +782,7 @@ export type CardList = {
 }
 
 export type Snapshot = {
+  stack?: string[]
   pending: Card[]
   later: Card[]
   delegated: Card[]
