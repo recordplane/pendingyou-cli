@@ -1082,6 +1082,69 @@ export function presenceNameOf(record, sessionId) {
     const said = sessions[sessionId];
     return isObject(said) ? text(said.name, 120) : undefined;
 }
+export const EARLIER_RECENT_MS = PRESENCE_EVERY_MS + 60_000;
+export const ADOPT_AFTER_MS = PRESENCE_EVERY_MS + 60_000;
+export const HOOK_SLACK_MS = 60_000;
+function presenceEntry(sessions, id) {
+    if (!Object.hasOwn(sessions, id))
+        return null;
+    const said = sessions[id];
+    if (!isObject(said))
+        return null;
+    return {
+        state: said.state,
+        at: count(said.at),
+        since: count(said.since),
+        mod: count(said.mod),
+        hook: count(said.hook),
+        cwd: text(said.cwd, 400),
+        name: text(said.name, 120),
+    };
+}
+const sessionsOf = (record) => {
+    const parsed = typeof record === 'string' ? parseJson(record) : record;
+    return isObject(parsed) && isObject(parsed.sessions) ? parsed.sessions : null;
+};
+export function earlierOf(record, me, now) {
+    const sessions = sessionsOf(record);
+    const mine = sessions ? presenceEntry(sessions, me) : null;
+    if (!sessions || !mine?.name || !mine.cwd || mine.since === undefined)
+        return null;
+    const since = mine.since;
+    const found = [];
+    for (const id of Object.keys(sessions)) {
+        if (id === me)
+            continue;
+        const other = presenceEntry(sessions, id);
+        if (other?.state !== 'live' || other.at === undefined)
+            continue;
+        if (other.name !== mine.name || other.cwd !== mine.cwd)
+            continue;
+        if (other.since === undefined || other.since >= since)
+            continue;
+        if (other.mod === undefined || other.mod <= since || now - other.mod > EARLIER_RECENT_MS)
+            continue;
+        if (other.hook !== undefined && other.hook > since + HOOK_SLACK_MS)
+            continue;
+        found.push({ id, at: other.at });
+    }
+    return found.length === 1 ? (found[0] ?? null) : null;
+}
+export function stillQuiet(record, earlier) {
+    const sessions = sessionsOf(record);
+    const now = sessions ? presenceEntry(sessions, earlier.id) : null;
+    return now?.state === 'live' && now.at === earlier.at;
+}
+export function adopted(own, earlier) {
+    const seenAt = Math.max(own.seenAt ?? 0, earlier.seenAt ?? 0);
+    return {
+        ...own,
+        ...(own.name || !earlier.name ? {} : { name: earlier.name }),
+        ...(own.server || !earlier.server ? {} : { server: earlier.server }),
+        ...(seenAt ? { seenAt } : {}),
+        cards: { ...earlier.cards, ...own.cards },
+    };
+}
 export function presenceArgv(config, origin, session) {
     return [
         `${config}/bin/pendingyou-hook`,

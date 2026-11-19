@@ -11,6 +11,15 @@
 //   background a hold until then (unwokenText); never in its first LOADED_GRACE_MS, while the mod may still be starting;
 // - `init` names the sessions open here that have neither (unwokenSessions), from presence/claude-code.json.
 //
+// One process can go on under a new session id its mod didn't see (0.45.2; seen 2026-11-19, "recordplane-d8": the
+// hooks gave the new id, with no note and no `mod`, while the mod said live and woke the conversation under the old
+// one). The mod wakes the process it runs in, whatever id it goes by, so a session with neither counts as woken when
+// another can only be the same process before the new id (wokenAlongside): by its name, in its folder, heard of before
+// it, its mod saying live after the new id began and lately, and its hooks (which run on every message and turn)
+// quiet since the new id began. Two sessions of one name and folder, both in use, keep the warning: the other's hooks
+// go on. A record from before 0.45.2 has no hooks' time, and keeps it too: a deaf session warned matters more than a
+// woken one left alone. A reload of the mod notes the id it runs under then (register.ts's start).
+//
 // Only while init has the mod in Claude Code's settings (its record's `modDir`): an older Claude Code, or the plugin's
 // copy alone, isn't asked about.
 import { readdir, rm, stat } from 'node:fs/promises'
@@ -27,6 +36,8 @@ const SESSION = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/
 export const LOADED_GRACE_MS = 15_000
 /** How long after it last said it's live a session that never said it closed is named as maybe still open. */
 export const OPEN_FOR_MS = 12 * 60 * 60_000
+/** How lately the mod must have said live in that other session: three of its 5-minute beats (wake.ts). */
+export const MOD_BEAT_MS = 15 * 60_000
 /** How long a session's note is kept after the mod last wrote it. */
 const KEEP_NOTES_MS = 7 * 24 * 60 * 60_000
 
@@ -63,6 +74,38 @@ export async function modLoaded(
   )
 }
 
+/** How long after this session was first heard of the other's hooks may still have been heard. */
+export const HOOK_SLACK_MS = 60_000
+
+/**
+ * Whether another session can only be this one's process before it went on under this id, its mod still running: by
+ * its name, in its folder, heard of first; its mod said live after this id was first heard of, and in the last
+ * MOD_BEAT_MS; its hooks last heard no later than HOOK_SLACK_MS after this id was first heard of.
+ */
+export function wokenAlongside(
+  sessions: Record<string, Said>,
+  session: string,
+  now: number,
+): boolean {
+  const mine = sessions[session]
+  const since = mine?.since
+  if (!mine?.name || !mine.cwd || since === undefined) return false
+  return Object.entries(sessions).some(
+    ([id, other]) =>
+      id !== session &&
+      other.state === 'live' &&
+      other.mod !== undefined &&
+      now - other.mod <= MOD_BEAT_MS &&
+      other.name === mine.name &&
+      other.cwd === mine.cwd &&
+      other.since !== undefined &&
+      other.since < since &&
+      other.mod > since &&
+      other.hook !== undefined &&
+      other.hook <= since + HOOK_SLACK_MS,
+  )
+}
+
 /**
  * The next-message hook's line for a session the mod doesn't run in, the first time only; null for any other session,
  * or when it can't tell. `said`: what presence knew of the session before this message said it's live. Never throws.
@@ -77,10 +120,10 @@ export async function unwokenLine(
     if (!session || !SESSION.test(session)) return null
     if (!(await modConfigured(io))) return null
     // The mod may have said live since (presence runs on its own).
-    const latest = (await readSaid(io, 'claude-code').catch(() => ({}) as Record<string, Said>))[
-      session
-    ]
+    const sessions = await readSaid(io, 'claude-code').catch(() => ({}) as Record<string, Said>)
+    const latest = sessions[session]
     if ((await modLoaded(io, session, said)) || latest?.mod) return null
+    if (wokenAlongside(sessions, session, io.now())) return null
     // Just started: the mod may not have noted it yet.
     if (said?.since !== undefined && io.now() - said.since < LOADED_GRACE_MS) return null
     if (!(await claimUnwoken(io, session))) return null
@@ -107,6 +150,7 @@ export async function unwokenSessions(io: Pick<Io, 'env' | 'home' | 'now'>): Pro
   for (const [session, each] of Object.entries(said)) {
     if (each.state !== 'live' || io.now() - each.at > OPEN_FOR_MS) continue
     if (await modLoaded(io, session, each)) continue
+    if (wokenAlongside(said, session, io.now())) continue
     found.push({
       session,
       at: each.at,

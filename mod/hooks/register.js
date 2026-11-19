@@ -1,7 +1,7 @@
 // Generated from packages/claude-plugin/src/wake/register.ts in recordplane/pendingyou: edit that, then run
 // `pnpm --filter @pendingyou/claude-plugin generate`.
 
-import { argumentsOf, BOOK_TOUCH_MS, blockedNote, CLAIM_PREFIX, CLAIM_RENEW_MS, CLI_COPY, cardTool, checkArgs, checked, claimedElsewhere, claimHeld, claimLapsesAt, claimLease, cliConfigOf, connectionOf, dueCards, emptyBook, failed, folderOf, graceAfter, graceEnds, HANDED_FAST_MS, HANDED_FOR_MS, HANDED_READS, HERDR_EVERY_MS, HERDR_RUN_MS, handedDue, handedNext, handedOf, handedText, handedView, herdrArgv, herdrPayload, holdOf, holdReply, inHerdr, isFresh, isRefusal, isStale, isWaitingOnYou, KEEP_MS, keepsBook, LISTEN_RUN_MS, LISTENER_KEY, learn, leaseFor, leaseHolder, listenArgv, listened, loadedNote, loadedPath, mayListen, midTurnKindOf, midTurnText, momentOf, nameKept, newerElsewhere, originOf, PRESENCE_EVERY_MS, PRESENCE_RUN_MS, presenceArgv, presenceNameOf, prompted, put, readBook, readClaim, readListener, readSetup, readSignal, readSince, readWait, resultObject, retellDue, SETUP_AFTER_MS, SETUP_RETRY_MS, SETUP_SERVER, SETUP_TRIES, SIGNAL_KEY, settle, setUpOf, setupNeeded, setupPrompt, stateOf, statusText, TICK_MS, takesHanded, told, toTell, unreadWake, untold, used, wakeText, wordsOf, } from "./wake.js";
+import { ADOPT_AFTER_MS, adopted, argumentsOf, BOOK_TOUCH_MS, blockedNote, CLAIM_PREFIX, CLAIM_RENEW_MS, CLI_COPY, cardTool, checkArgs, checked, claimedElsewhere, claimHeld, claimLapsesAt, claimLease, cliConfigOf, connectionOf, dueCards, earlierOf, emptyBook, failed, folderOf, graceAfter, graceEnds, HANDED_FAST_MS, HANDED_FOR_MS, HANDED_READS, HERDR_EVERY_MS, HERDR_RUN_MS, handedDue, handedNext, handedOf, handedText, handedView, herdrArgv, herdrPayload, holdOf, holdReply, inHerdr, isFresh, isRefusal, isStale, isWaitingOnYou, KEEP_MS, keepsBook, LISTEN_RUN_MS, LISTENER_KEY, learn, leaseFor, leaseHolder, listenArgv, listened, loadedNote, loadedPath, mayListen, midTurnKindOf, midTurnText, momentOf, nameKept, newerElsewhere, originOf, PRESENCE_EVERY_MS, PRESENCE_RUN_MS, presenceArgv, presenceNameOf, prompted, put, readBook, readClaim, readListener, readSetup, readSignal, readSince, readWait, resultObject, retellDue, SETUP_AFTER_MS, SETUP_RETRY_MS, SETUP_SERVER, SETUP_TRIES, SIGNAL_KEY, settle, setUpOf, setupNeeded, setupPrompt, stateOf, statusText, stillQuiet, TICK_MS, takesHanded, told, toTell, unreadWake, untold, used, wakeText, wordsOf, } from "./wake.js";
 const UNHEARD = { error: 'unavailable' };
 const RETRY_MS = 60_000;
 const live = {
@@ -37,6 +37,7 @@ const live = {
     signalSeen: 0,
     words: new Map(),
     wordless: new Set(),
+    earlier: null,
 };
 const keyOf = (sessionId) => `session:${sessionId}`;
 function blockedServer() {
@@ -597,12 +598,54 @@ async function startPresence($) {
     await sayLive($);
     live.presenceTimer = $.clock.every(PRESENCE_EVERY_MS, () => sayLive($));
 }
+async function presenceRecord($) {
+    const config = cliConfigOf($.plugin.root, $.plugin.name);
+    if (!config)
+        return null;
+    try {
+        return await $.fs.read(`${config}/presence/claude-code.json`);
+    }
+    catch {
+        return null;
+    }
+}
+async function lookEarlier($) {
+    try {
+        live.earlier = earlierOf(await presenceRecord($), live.sessionId, await $.clock.now());
+        if (live.earlier)
+            $.clock.after(ADOPT_AFTER_MS, () => adoptEarlier($));
+    }
+    catch { }
+}
+async function adoptEarlier($) {
+    try {
+        const earlier = live.earlier;
+        live.earlier = null;
+        if (!earlier || !live.sessionId || earlier.id === live.sessionId)
+            return;
+        if (!stillQuiet(await presenceRecord($), earlier))
+            return;
+        const kept = readBook(await $.store.get(keyOf(earlier.id)));
+        if (Object.keys(kept.cards).length === 0 && !kept.seenAt)
+            return;
+        live.book = adopted(live.book, kept);
+        if (kept.seenAt && kept.seenAt > live.seenAt) {
+            live.seenAt = kept.seenAt;
+            live.handedAt = 0;
+        }
+        await save($);
+        await $.store.delete(keyOf(earlier.id));
+        showCards($);
+        soon($);
+    }
+    catch { }
+}
 async function recallName($) {
     try {
         const config = cliConfigOf($.plugin.root, $.plugin.name);
         if (live.book.name || live.book.fork || !config || !live.sessionId)
             return;
-        const name = presenceNameOf(await $.fs.read(`${config}/presence/claude-code.json`), live.sessionId);
+        const name = presenceNameOf(await presenceRecord($), live.sessionId);
         if (!name)
             return;
         const now = await $.clock.now();
@@ -623,7 +666,11 @@ async function recallName($) {
 async function start($, e) {
     live.me = $.plugin.name;
     live.sessionId = await $.session.id();
-    live.book = readBook(await $.store.get(keyOf(live.sessionId)));
+    const kept = await $.store.get(keyOf(live.sessionId));
+    live.book = readBook(kept);
+    live.earlier = null;
+    if (kept === undefined)
+        await lookEarlier($);
     await recallName($);
     freshHanded();
     await folderOfSession($, e.cwd);
@@ -647,6 +694,7 @@ async function switchSession($, e) {
     const carried = e.source === 'fork' ? { ...forked, fork: true } : null;
     const was = live.sessionId;
     live.sessionId = id;
+    live.earlier = null;
     const held = live.held;
     live.held = [];
     await giveBack($, held, was);

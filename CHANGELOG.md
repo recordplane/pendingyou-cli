@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.45.2 (2026-11-19)
+
+- **A Claude Code session that goes on under a new id keeps its cards across a reload.** One session kept running
+  while Claude Code gave it a new session id, and the wake mod never heard about it. The mod kept waking it, but kept
+  its cards under the old id. When `init` updates the mod, the session reloads it under the new id, and it would have
+  found no cards there, so your answers to them wouldn't have woken it. Now a session that reloads and finds no cards
+  under its id waits about 6 minutes. If one other open session can only have been this same process under its old id
+  (same name, same folder, its mod running until the reload, and nothing heard from it since), the session takes that
+  session's cards. It writes them under the new id before removing the old copy.
+- **`init` and the next message tell such a session apart from a truly unwoken one.** A session the mod has no note
+  for counts as woken only when another session with the same name and folder looks like this same process under its
+  old id: it was heard of first, its mod has said it's open since the new id began (in the last 15 minutes), and its
+  hooks went quiet when the new id began. If both sessions are still being used, or the record is from before 0.45.2,
+  you're still told to restart. Presence now records when Claude Code's hooks last said a session was open.
+- The Pending You plugin carries the same mod: guide 2.63.1 (version only).
+
 ## 0.45.1 (2026-11-19)
 
 Found by the first live run of Antigravity.

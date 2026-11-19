@@ -233,6 +233,12 @@ export interface Said {
   since?: number
   mod?: number
   /**
+   * When Claude Code's hooks last said it's live (0.45.2: they always give the transcript), apart from the mod: a
+   * session id whose hooks went quiet when another began, while its mod went on, is one process gone on under a new
+   * id (loaded.ts's wokenAlongside).
+   */
+  hook?: number
+  /**
    * When it started as a branch of another session (0.43.2, Claude Code's /branch): its transcript's names from before
    * then are its parent's, never its own.
    */
@@ -263,6 +269,7 @@ export async function readSaid(
       ) {
         const since = numberOr(value.since)
         const mod = numberOr(value.mod)
+        const hook = numberOr(value.hook)
         const fork = numberOr(value.fork)
         const cwd = text(value.cwd)
         const name = text(value.name)
@@ -271,6 +278,7 @@ export async function readSaid(
           at: value.at,
           ...(since !== undefined ? { since } : {}),
           ...(mod !== undefined ? { mod } : {}),
+          ...(hook !== undefined ? { hook } : {}),
           ...(fork !== undefined ? { fork } : {}),
           ...(cwd ? { cwd } : {}),
           ...(name ? { name } : {}),
@@ -303,6 +311,9 @@ async function noteSaid(
       ...(said.mod !== undefined || before?.mod !== undefined
         ? { mod: Math.max(said.mod ?? 0, before?.mod ?? 0) }
         : {}),
+      ...(said.hook !== undefined || before?.hook !== undefined
+        ? { hook: Math.max(said.hook ?? 0, before?.hook ?? 0) }
+        : {}),
     }
     const now = io.now()
     for (const [id, each] of Object.entries(sessions))
@@ -324,10 +335,13 @@ async function sendOnce(
   const name = await nameFor(io, command)
   // Claude Code's wake mod says live with no transcript; its hooks always give theirs (0.23.0).
   const mod = command.app === 'claude-code' && command.state === 'live' && !command.transcript
+  const hook =
+    command.app === 'claude-code' && command.state === 'live' && Boolean(command.transcript)
   const noted = await noteSaid(io, command.app, command.session, {
     state: command.state,
     at,
     ...(mod ? { mod: at } : {}),
+    ...(hook ? { hook: at } : {}),
     ...(command.fork ? { fork: at } : {}),
     ...(cwd ? { cwd } : {}),
     ...(name ? { name } : {}),
