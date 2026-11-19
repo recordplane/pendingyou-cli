@@ -13,14 +13,23 @@
 // Inside Pi (0.12.0) it answers at once: Pi's shell tool waits for a command to end, so a hold would stop the session
 // for hours. Pi marks the processes it starts (`AI_AGENT=pi`, `PI_CODING_AGENT=true`), and its Pending You extension
 // wakes the session itself.
+//
+// Inside Antigravity (agy) it waits as it does for Claude Code: agy's run_command sends a command to the background
+// (WaitMsBeforeAsync), and a background command that finishes wakes the agent, the only way an idle Antigravity
+// conversation hears an answer (nothing starts a turn from outside it). It hears with Antigravity's own sign-in and its
+// cards (`source`), once init has set Antigravity up here and an agy process is among its ancestors, so the command an
+// agent runs, and the permission rule init may add for it (`command(npx pendingyou hold)`), stay the same as Claude
+// Code's.
 import { getJson, SignInNeeded, Unavailable } from './api.ts'
-import { DEFAULT_APP } from './apps/ids.ts'
+import { APP_NAMES, type AppId, DEFAULT_APP } from './apps/ids.ts'
 import { readPiManifest } from './apps/pi.ts'
 import { DEFAULT_ORIGIN, DEFAULT_TIMEOUT_MS } from './args.ts'
 import { readCredential } from './credentials.ts'
+import { configDir, readJson } from './files.ts'
 import { describe, type Heard } from './format.ts'
 import type { Io } from './io.ts'
 import { linkSoon } from './link.ts'
+import { agentProcess } from './presence.ts'
 import { markHanded, momentOf } from './state.ts'
 
 /** The longest one long poll asks the server to wait. */
@@ -71,6 +80,23 @@ export const piHoldReply = (requestId: string, extension: boolean) =>
     ? `Pending You: no hold is needed in Pi, and Pi’s shell would wait on it. Pending You’s extension wakes this session when your person answers ${requestId}, writes to you on it, or its fallback runs, even while it’s idle. Nothing is running in the background: keep working, or end your turn.`
     : `Pending You: Pi’s shell waits for a command to end, so a hold would stop this session for hours. While you’re blocked on ${requestId}, call get_request every pollAfterSeconds; otherwise list_pending at breakpoints.`
 
+/** How far up its ancestors a hold looks for agy: its shell, npx and npx's own shell come between. */
+const AGY_DEPTH = 10
+
+/**
+ * The app a hold waits for: Antigravity when init set it up here and an agy process is among the hold's ancestors (the
+ * agent ran it); else Claude Code, as always. No look at all without Antigravity's manifest.
+ */
+export async function holdApp(io: Io): Promise<AppId> {
+  try {
+    const manifest = await readJson(`${configDir(io)}/antigravity.json`).catch(() => null)
+    if (manifest === null) return DEFAULT_APP
+    return (await agentProcess(io, 'antigravity', AGY_DEPTH)) ? 'antigravity' : DEFAULT_APP
+  } catch {
+    return DEFAULT_APP
+  }
+}
+
 export async function hold(
   io: Io,
   options: { origin: string; requestId: string; timeoutMs: number },
@@ -80,6 +106,7 @@ export async function hold(
     io.out(`${piHoldReply(requestId, (await readPiManifest(io)) !== null)}\n`)
     return 0
   }
+  const app = await holdApp(io)
   const again = holdCommand(requestId, origin, options.timeoutMs)
   const started = io.now()
   const deadline = started + options.timeoutMs
@@ -89,11 +116,11 @@ export async function hold(
       ended
         ? `Pending You: this computer’s pendingyou sign-in has ended, so I can’t wait on ${requestId}.`
         : `Pending You: the pendingyou command isn’t signed in on this computer, so I can’t wait on ${requestId}.`,
-      'Ask your person to run `npx pendingyou login`. Until then, call get_request at breakpoints.',
+      `Ask your person to run \`npx pendingyou login${app === DEFAULT_APP ? '' : ` --app ${app}`}\`. Until then, call get_request at breakpoints.`,
     ])
     return 1
   }
-  if (!(await readCredential(io, origin))) return signInNeeded(false)
+  if (!(await readCredential(io, origin, app))) return signInNeeded(false)
   // This computer's sign-ins linked to it by its key, every few hours, in the background (0.29.0, link.ts).
   await linkSoon(io, origin)
   let failures = 0
@@ -119,9 +146,10 @@ export async function hold(
       result = await getJson(
         io,
         origin,
-        `/mcp/cli/requests/${encodeURIComponent(requestId)}?wait=${wait}&source=${DEFAULT_APP}`,
+        `/mcp/cli/requests/${encodeURIComponent(requestId)}?wait=${wait}&source=${app}`,
         (wait + 20) * 1000,
         io.signal,
+        { app },
       )
     } catch (error) {
       if (io.signal.aborted) continue
@@ -137,8 +165,8 @@ export async function hold(
     failures = 0
     if (result.status === 404) {
       print([
-        `Pending You: can’t find ${requestId} among your person’s Claude Code questions on ${origin}.`,
-        'Check the id from post_request. If this Claude Code signed in to Pending You as someone else, use get_request instead.',
+        `Pending You: can’t find ${requestId} among your person’s ${APP_NAMES[app]} questions on ${origin}.`,
+        `Check the id from post_request. If this ${APP_NAMES[app]} signed in to Pending You as someone else, use get_request instead.`,
       ])
       return 1
     }

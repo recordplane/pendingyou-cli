@@ -946,7 +946,7 @@ function appCommandOf(
   }
 }
 
-export const USAGE = `pendingyou: Pending You for your coding agents (Claude Code, Codex, OpenCode and Pi)
+export const USAGE = `pendingyou: Pending You for your coding agents (Claude Code, Codex, OpenCode, Pi and Antigravity)
 
   npx -y pendingyou@latest init
                                Set up every agent on this computer: its MCP server, signed in through
@@ -955,10 +955,13 @@ export const USAGE = `pendingyou: Pending You for your coding agents (Claude Cod
                                connects them all: your browser opens on Pending You, or over SSH you
                                approve a code on your phone. Claude Code 2.1.287 or later also gets the
                                wake mod; Codex is woken by codex queue; OpenCode gets a plugin and Pi
-                               an extension that do all of that. --app limits it to some
+                               an extension that do all of that. --app limits it to some.
+                               Antigravity is set up only when named (--app antigravity), as a
+                               first version to try: a plugin, and, if you say yes, its OK to run
+                               Pending You's tools and hold without asking
   npx pendingyou hold <req_…>  Wait in the background until the answer to a request is ready,
-                               print it, and exit (which wakes Claude Code); with the wake mod,
-                               the mod answers it and nothing runs
+                               print it, and exit (which wakes Claude Code, or Antigravity); with
+                               the wake mod, the mod answers it and nothing runs
   npx pendingyou status        What's set up for each agent, and whether it hears answers right away
   npx pendingyou login [--app <app>] | logout
                                Sign an agent in again (Claude Code's when none is named), or out

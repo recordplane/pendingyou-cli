@@ -8,7 +8,7 @@
 // This computer's key (0.18.0, machine.ts): init makes it the first time, every sign-in it starts proves it, and each
 // connection already signed in proves it with its own sign-in (POST /mcp/cli/machine), with nothing to approve. So a
 // computer set up before 0.18.0 gets its key on its next init; its assistants' sign-ins stay exactly as they were.
-import { APP_IDS, type AppId, DEFAULT_APP, namesOf } from './apps/ids.ts'
+import { type AppId, DEFAULT_APP, namesOf } from './apps/ids.ts'
 import { opencodePluginPath, pluginCopyVersion } from './apps/opencode.ts'
 import { APPS, appModule, atLeast } from './apps/registry.ts'
 import type {
@@ -48,7 +48,7 @@ async function findApps(
   const found: { app: AppModule; detected: Detected }[] = []
   const problems: string[] = []
   for (const app of APPS) {
-    if (wanted && !wanted.includes(app.id)) continue
+    if (wanted ? !wanted.includes(app.id) : app.optIn) continue
     const detected = await app.detect(io)
     if (!detected) {
       if (wanted)
@@ -183,8 +183,16 @@ export async function init(io: Io, options: InitOptions): Promise<number> {
   if (found.length === 0) {
     for (const problem of problems) io.out(`${problem}\n`)
     io.out(
-      `Didn’t find ${namesOf([...APP_IDS], 'or')} on this computer’s PATH. Install one, then run: npx -y pendingyou@latest init${flag}\n`,
+      `Didn’t find ${namesOf(
+        APPS.filter((app) => !app.optIn).map((app) => app.id),
+        'or',
+      )} on this computer’s PATH. Install one, then run: npx -y pendingyou@latest init${flag}\n`,
     )
+    // An app set up only when it's named (optIn): its own line, with the command that names it.
+    for (const app of APPS.filter((each) => each.optIn))
+      io.out(
+        `${app.name} is set up only when you name it: npx -y pendingyou@latest init --app ${app.id}${flag}\n`,
+      )
     return 1
   }
   const versions = found.map(
@@ -312,8 +320,8 @@ export async function init(io: Io, options: InitOptions): Promise<number> {
 }
 
 /**
- * The apps `status` covers: the ones named, else every one init set up, else the ones on this computer (Claude Code
- * when there are none either).
+ * The apps `status` covers: the ones named, else every one init set up, else the ones on this computer that init sets
+ * up without being asked (Claude Code when there are none either).
  */
 async function coveredApps(io: Io, wanted: readonly AppId[] | undefined): Promise<AppModule[]> {
   if (wanted) return wanted.map(appModule)
@@ -321,7 +329,7 @@ async function coveredApps(io: Io, wanted: readonly AppId[] | undefined): Promis
   for (const app of APPS) if (await app.installed(io)) installed.push(app)
   if (installed.length) return installed
   const found: AppModule[] = []
-  for (const app of APPS) if (await app.detect(io)) found.push(app)
+  for (const app of APPS) if (!app.optIn && (await app.detect(io))) found.push(app)
   return found.length ? found : [appModule(DEFAULT_APP)]
 }
 

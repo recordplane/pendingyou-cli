@@ -13,6 +13,9 @@
 //   lease of its own), which says live every 5 minutes while the Codex process the hooks ran under (Codex CLI, or the
 //   Codex app's own codex) is running, and closed once it's gone; its SessionEnd hook (Codex fires it when a
 //   conversation is archived or closed, or after 30 idle minutes) says closed and lets the keeper go.
+// - Antigravity (agy): the same keeper, started by its first message's hooks (SessionStart's pickup and each turn's
+//   first PreInvocation, handoff), on the agy process those hooks run under. It has no session-end hook, so the keeper's
+//   closed, once that process is gone, is the only one.
 // - OpenCode's plugin and Pi's extension say live as a session starts and every 5 minutes in their own process, and
 //   closed on their shutdown events, through `presence --state …` (this file's command, run by the shim).
 //
@@ -67,8 +70,20 @@ const REOPEN_PAUSE_MS = 1500
 const FORGET_MS = 2 * 24 * 60 * 60_000
 /** A session's id, as the apps give it: also part of a lease's file name. */
 const SESSION = /^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/
-/** How far up its ancestors a Codex hook looks for the Codex process it runs under. */
+/** How far up its ancestors a Codex (or Antigravity) hook looks for the app's process it runs under. */
 const ANCESTORS = 6
+
+/** The apps with a keeper, and their program's file name. */
+export type KeptApp = 'codex' | 'antigravity'
+/**
+ * Each kept app's program, by its file's name: Codex CLI's (or the Codex app's own) codex, and Antigravity's `agy`
+ * (UNCONFIRMED beyond one live look, 2026-11-19: a hook's chain was hook ← sh ← agy ← the shell).
+ */
+export const AGENT_PROGRAMS: Record<KeptApp, RegExp> = {
+  codex: /^codex/i,
+  antigravity: /^agy$/i,
+}
+const isKept = (app: AppId): app is KeptApp => app === 'codex' || app === 'antigravity'
 
 export type PresenceState = 'live' | 'closed'
 
@@ -435,25 +450,36 @@ async function processOf(io: Io, pid: number): Promise<{ ppid: number; command: 
   return match ? { ppid: Number(match[1]), command: match[2] as string } : null
 }
 
-/** Whether a program is a codex (Codex CLI's, or the Codex app's own): its file's name. */
-const isCodex = (command: string) => /^codex/i.test(command.split('/').at(-1) ?? '')
+/** Whether a program is the app's (Codex CLI's or the Codex app's own codex; Antigravity's agy): its file's name. */
+const isProgram = (app: KeptApp, command: string) =>
+  AGENT_PROGRAMS[app].test(command.split('/').at(-1) ?? '')
 
-/** The Codex process a hook runs under (Codex runs hooks through sh): the nearest codex among its ancestors. */
-export async function codexProcess(io: Io): Promise<number | null> {
+/**
+ * The app's process a hook (or a command it runs) is under, the nearest among its ancestors: Codex and Antigravity run
+ * hooks through sh. `depth`: how far up to look.
+ */
+export async function agentProcess(
+  io: Io,
+  app: KeptApp,
+  depth = ANCESTORS,
+): Promise<number | null> {
   let pid = io.ppid
-  for (let step = 0; step < ANCESTORS && pid && pid > 1; step++) {
+  for (let step = 0; step < depth && pid && pid > 1; step++) {
     const found = await processOf(io, pid)
     if (!found) return null
-    if (isCodex(found.command)) return pid
+    if (isProgram(app, found.command)) return pid
     pid = found.ppid
   }
   return null
 }
 
-/** Whether that Codex process still runs. */
-async function stillRuns(io: Io, pid: number): Promise<boolean> {
+/** The Codex process a hook runs under: the nearest codex among its ancestors. */
+export const codexProcess = (io: Io) => agentProcess(io, 'codex')
+
+/** Whether that app's process still runs. */
+async function stillRuns(io: Io, app: KeptApp, pid: number): Promise<boolean> {
   const result = await io.run('ps', ['-o', 'comm=', '-p', String(pid)], 2000)
-  return result.code === 0 && isCodex(result.stdout.trim())
+  return result.code === 0 && isProgram(app, result.stdout.trim())
 }
 
 /** Whether a keeper holds the session now: its lease, touched within LEASE_STALE_MS. */
@@ -465,27 +491,29 @@ async function keeping(io: Pick<Io, 'env' | 'home'>, app: AppId, session: string
 }
 
 /**
- * Codex's session start and next message: makes sure the thread has a keeper, which says live now and every 5 minutes
- * while the Codex process the hook runs under is running. One that can't find it says live once. Quick and quiet. In a
- * Herdr pane (0.17.0) the keeper also keeps the pane's badges, so it starts there even without a connection here.
+ * Codex's session start and next message (and Antigravity's first message and each turn's first model call): makes
+ * sure the thread has a keeper, which says live now and every 5 minutes while the app's process the hook runs under is
+ * running. One that can't find it says live once. Quick and quiet. In a Herdr pane (0.17.0) the keeper also keeps the
+ * pane's badges, so it starts there even without a connection here.
  */
 export async function keepPresent(
   io: Io,
   origin: string,
   session: string | null,
   cwd: string | null,
+  app: KeptApp = 'codex',
 ): Promise<void> {
   try {
     if (!session || !SESSION.test(session) || io.platform === 'win32') return
-    if (!(await connected(io, origin, 'codex')) && !(await herdrTarget(io))) return
-    if (await keeping(io, 'codex', session)) return
-    const pid = await codexProcess(io)
+    if (!(await connected(io, origin, app)) && !(await herdrTarget(io))) return
+    if (await keeping(io, app, session)) return
+    const pid = await agentProcess(io, app)
     if (!pid) {
-      await announce(io, origin, 'codex', { state: 'live', session, cwd, again: true })
+      await announce(io, origin, app, { state: 'live', session, cwd, again: true })
       return
     }
     io.background(
-      presenceArgs(origin, 'codex', { state: 'live', session, cwd, keep: true, pid, at: io.now() }),
+      presenceArgs(origin, app, { state: 'live', session, cwd, keep: true, pid, at: io.now() }),
     )
   } catch {}
 }
@@ -532,7 +560,10 @@ async function release(io: Io, app: AppId, session: string): Promise<void> {
  * Herdr pane (0.17.0) it writes the pane's badges with each live, keeps on for them when Pending You won't take its
  * presence, and takes them off as it stops (unless another keeper took the thread over).
  */
-async function keep(io: Io, command: PresenceCommand & { session: string; pid: number }) {
+async function keep(
+  io: Io,
+  command: PresenceCommand & { app: KeptApp; session: string; pid: number },
+) {
   const { app, session, pid } = command
   const lease = await takeLease(io, app, session)
   if (!lease) return
@@ -548,7 +579,7 @@ async function keep(io: Io, command: PresenceCommand & { session: string; pid: n
         taken = held === 'taken'
         return
       }
-      if (!(await stillRuns(io, pid))) {
+      if (!(await stillRuns(io, app, pid))) {
         if (speaking) await sendOnce(io, { ...command, state: 'closed', at: io.now() })
         return
       }
@@ -559,7 +590,7 @@ async function keep(io: Io, command: PresenceCommand & { session: string; pid: n
           if (outcome && GIVE_UP.has(outcome)) speaking = false
           // Open, so it may be handed a question (0.43.2): Codex's one listener for those runs (it stops after 8 hours,
           // and nothing else would start it again until a hook ran).
-          else await keepListening(io, command.origin, session)
+          else if (app === 'codex') await keepListening(io, command.origin, session)
         }
         if (badges) await reportThreads(io, app, { session, at: io.now() })
         if (!speaking && !badges) return
@@ -608,8 +639,9 @@ export async function presence(io: Io, command: PresenceCommand): Promise<number
     }
     const { session } = command
     if (!session || !SESSION.test(session)) return 0
-    if (command.keep && command.pid && command.app === 'codex' && command.state === 'live') {
-      await keep(io, { ...command, session, pid: command.pid })
+    const { app } = command
+    if (command.keep && command.pid && isKept(app) && command.state === 'live') {
+      await keep(io, { ...command, app, session, pid: command.pid })
       return 0
     }
     // Herdr's badges (0.17.0): OpenCode's and Pi's sessions in this pane, with each live and as one closes. Claude

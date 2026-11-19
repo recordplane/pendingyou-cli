@@ -7,6 +7,7 @@
 // Only the pendingyou server's url is read, never anything else from those files; nothing is written, nothing is sent.
 // A server Claude Code can't be read for (no file, another shape, a plugin's server) is never called a mismatch.
 import { join } from 'node:path'
+import { antigravityServerUrl } from './apps/antigravity.ts'
 import { codexServer } from './apps/codex.ts'
 import { type AppId, DEFAULT_APP } from './apps/ids.ts'
 import { opencodeServer } from './apps/opencode.ts'
@@ -109,7 +110,8 @@ export const mismatchLine = (server: FolderServer, origin: string) =>
 /**
  * The hook's warning for this folder, or null when the two agree or can't be told. Never throws. Codex's server is the
  * one in its own config (~/.codex/config.toml), for every folder; OpenCode's the one in its global config; Pi's the one
- * in its mcp.json (its bridge's `--origin`, or production).
+ * in its mcp.json (its bridge's `--origin`, or production); Antigravity's the one in Pending You's plugin for it (or,
+ * without one there, its global mcp_config.json's).
  */
 export async function environmentWarning(
   io: Pick<Io, 'env' | 'home' | 'cwd'>,
@@ -127,7 +129,9 @@ export async function environmentWarning(
           ? await opencodeServer(io).then((url) => (url ? { url, scope: 'user' } : null))
           : app === 'pi'
             ? await piServerUrl(io).then((url) => (url ? { url, scope: 'user' } : null))
-            : await serverForFolder(io, folder)
+            : app === 'antigravity'
+              ? await antigravityServerUrl(io).then((url) => (url ? { url, scope: 'user' } : null))
+              : await serverForFolder(io, folder)
     return differs(server, origin) ? mismatchLine(server, origin) : null
   } catch {
     return null

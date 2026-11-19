@@ -218,6 +218,8 @@ const CARD_TOOLS: Partial<Record<AppId, RegExp>> = {
   opencode:
     /^([A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*)_(post_request|post_answer|update_request|reply_in_thread|cancel_request|answer_delegated|hand_back)$/i,
   pi: MCP_CARD_TOOL,
+  // Antigravity's calls, as its hooks' reading names them (antigravity-hooks.ts's agyToolCall).
+  antigravity: MCP_CARD_TOOL,
 }
 /** The calls that answer a question handed to the session (D21): never a card of its own. */
 const HELPER_CALLS = new Set(['answer_delegated', 'hand_back'])
@@ -231,6 +233,7 @@ const NAMED_TOOLS: Partial<Record<AppId, RegExp>> = {
   codex: MCP_NAMED_TOOL,
   opencode: /^([A-Za-z0-9_-]*pendingyou[A-Za-z0-9_-]*)_(whoami|list_pending|get_request)$/i,
   pi: MCP_NAMED_TOOL,
+  antigravity: MCP_NAMED_TOOL,
 }
 
 /** The card tool a call was, for an app whose hooks read them; null for any other tool. */

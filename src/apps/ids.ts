@@ -4,7 +4,7 @@
 // read the list without loading them.
 
 /** Every app with a module, in the order init sets them up and status lists them. */
-export const APP_IDS = ['claude-code', 'codex', 'opencode', 'pi'] as const
+export const APP_IDS = ['claude-code', 'codex', 'opencode', 'pi', 'antigravity'] as const
 export type AppId = (typeof APP_IDS)[number]
 
 /** What people call each app: "Claude Code on build-01" is a connection's name on the Assistants page. */
@@ -13,6 +13,9 @@ export const APP_NAMES: Record<AppId, string> = {
   codex: 'Codex',
   opencode: 'OpenCode',
   pi: 'Pi',
+  // Must match the server's ANTIGRAVITY_NAME (packages/domain/src/sources.ts), the product's one name for it: the command
+  // line has no dependencies, so it keeps its own copy.
+  antigravity: 'Antigravity',
 }
 
 /**

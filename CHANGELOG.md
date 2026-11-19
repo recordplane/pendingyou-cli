@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.45.0 (2026-11-19)
+
+- **Antigravity, as a first version to try.** `npx -y pendingyou@latest init --app antigravity` sets up Google's
+  Antigravity CLI (`agy` 1.5.12 or later), alone or beside other agents (`--app codex,antigravity`), with its own
+  connection and the same one approval. It is set up only when you name it: `init` with no `--app` leaves Antigravity
+  and `~/.gemini` alone even when agy is installed, and `status` shows it once it's set up. It writes one plugin of
+  Pending You's in `~/.gemini/config/plugins/pendingyou/`: its MCP server through the bridge, with the tools every
+  task uses loaded at once; the guide's short version as always-on rules, and the skill; and hooks that hand it your
+  answers as a conversation starts and with each message, and ask it once to put on a card what it leaves you only in
+  chat. agy doesn't hand that hook the reply, so it reads the reply's last words from the end of agy's own transcript.
+  After the agent posts a card, the hooks ask Pending You for the conversation's open cards, because agy doesn't hand
+  them the card's id: the conversation knows the card at once, and so do its Herdr badges. `init` asks you, apart from
+  the rest, whether Antigravity may run Pending You's tools and its hold without asking each time (two rules in
+  `~/.gemini/antigravity-cli/settings.json`), and adds none when there's nobody to ask or with `--yes`. `uninstall`
+  takes out exactly what `init` added. Restart agy afterwards: it loads plugins as it starts.
+- **What doesn't work yet in Antigravity.** Its permission prompts don't come to your cards: you answer them in agy.
+  Nothing outside Antigravity can start a turn in it, so an idle conversation hears your answer only through a hold it
+  started itself in the background after asking (`npx pendingyou hold <requestId>`); one that didn't start a hold hears
+  it with your next message. An answer the agent posts (`post_answer`) isn't known to the conversation until later. If
+  you send the same message twice in a row while a command the agent started is still running, the second is taken
+  for a hold waking it, and answers waiting for you aren't read with it.
+
 ## 0.44.1 (2026-11-19)
 
 Found by the first live tests of Codex 0.170.0, OpenCode 2.3.2 and Pi 1.5.2.

@@ -21,6 +21,10 @@
 // final message and the card calls come from them (opencodeTurn), and it asks at most once a turn too. The plugin then
 // starts the turn that goes on, with the reason, and shows a toast saying why. Pi's extension (`--app pi`) runs it as
 // Codex does, as a run of Pi's settles: the run's id, its last message, and what `posted --app pi` recorded for it.
+// Antigravity's Stop hook (apps/antigravity-hooks.ts) is read as Pi's run is: the turn its first model call noted, the
+// person's message that started it (agy's `lastUserInput`), never again once `continuationActive` (a Stop hook asked
+// already), and what `posted --app antigravity` recorded. agy 1.5.12 hands a Stop hook no final message, so (0.45.0)
+// its hook reads it from the tail of agy's transcript, and a turn whose final message can't be read there ends.
 //
 // Since 0.14.0 a question the person handed the agent from another assistant (D21) is never asked to go on a card of
 // its own: `answer_delegated` and `hand_back` put it in front of them (the asker's card), so they count as the turn's
@@ -676,22 +680,24 @@ function opencodeTurn(input: StopInput): Turn | null {
 }
 
 /**
- * The titles of this session's own cards still waiting on the person (what the next-message hook names; 0.25.0: its
- * own, not every card asked from its folder), or null when that can't be told: an error, a slow answer, a server too
- * old to list them.
+ * This session's own cards still waiting on the person (what the next-message hook names; 0.25.0: its own, not every
+ * card asked from its folder), each with its request id and title, or null when that can't be told: an error, a slow
+ * answer (OPEN_TIME_BOX_MS), a server too old to list them. Antigravity's PostToolUse hook asks it too (0.45.0), for
+ * the id of a card just posted (apps/antigravity-hooks.ts).
  */
-async function openTitles(
+export async function openCards(
   io: Io,
   origin: string,
   cwd: string,
   app: AppId,
-  session: { id: string | null; transcript: string | null },
+  session: { id: string | null; transcript: string | null; name?: string | null },
   /** What an answer with no list means: not known (null), or (the questions' check) none to match. */
   unlisted: 'unknown' | 'none' = 'unknown',
-): Promise<string[] | null> {
+): Promise<{ requestId: string | null; title: string }[] | null> {
   try {
     const name =
-      app === 'claude-code' ? await sessionName(session.transcript ?? undefined) : undefined
+      session.name ??
+      (app === 'claude-code' ? await sessionName(session.transcript ?? undefined) : undefined)
     const query = new URLSearchParams([
       ...folderForms(cwd, io.home).map((form) => ['cwd', form] as [string, string]),
       ['limit', '0'],
@@ -710,13 +716,24 @@ async function openTitles(
     if (status !== 200) return null
     const requests = body.open?.requests
     if (!Array.isArray(requests)) return unlisted === 'none' ? [] : null
-    return requests.flatMap((card: { title?: unknown } | null) =>
-      typeof card?.title === 'string' ? [card.title] : [],
+    return requests.flatMap((card: { requestId?: unknown; title?: unknown } | null) =>
+      typeof card?.title === 'string'
+        ? [
+            {
+              requestId: typeof card.requestId === 'string' ? card.requestId : null,
+              title: card.title,
+            },
+          ]
+        : [],
     )
   } catch {
     return null
   }
 }
+
+/** The titles of this session's own cards still waiting on the person (openCards), or null when that can't be told. */
+const openTitles = async (...args: Parameters<typeof openCards>): Promise<string[] | null> =>
+  (await openCards(...args))?.map((card) => card.title) ?? null
 
 /** What the Stop check knows of the turn: the final message, whether it posted, and what each card said. */
 async function turnOf(io: Io, input: StopInput, app: AppId): Promise<Turn | null> {
@@ -724,7 +741,7 @@ async function turnOf(io: Io, input: StopInput, app: AppId): Promise<Turn | null
     typeof input.last_assistant_message === 'string' && input.last_assistant_message.trim()
       ? input.last_assistant_message
       : ''
-  if (app === 'codex' || app === 'pi') {
+  if (app === 'codex' || app === 'pi' || app === 'antigravity') {
     // What Codex's PostToolUse hook (or Pi's extension) recorded for this turn; one nudge a turn, whatever it says.
     // Whether a handed question started it: what Codex's next-message hook recorded, or what Pi's extension says.
     if (typeof input.turn_id !== 'string' || !input.turn_id || !final) return null

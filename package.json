@@ -1,13 +1,14 @@
 {
   "name": "pendingyou",
-  "version": "0.44.1",
-  "description": "Pending You for your coding agents: one command sets up Claude Code, Codex, OpenCode and Pi to ask you through Pending You and hear your answers, even while they sit idle.",
+  "version": "0.45.0",
+  "description": "Pending You for your coding agents: one command sets up Claude Code, Codex, OpenCode, Pi and Antigravity to ask you through Pending You and hear your answers, even while they sit idle.",
   "keywords": [
     "pendingyou",
     "claude-code",
     "codex",
     "opencode",
     "pi",
+    "antigravity",
     "mcp",
     "human-in-the-loop",
     "ai-agents"

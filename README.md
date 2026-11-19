@@ -2,14 +2,15 @@
 
 Pending You for your coding agents. Your agents ask you in [Pending You](https://www.pendingyou.com) when you're away;
 this command sets Claude Code, Codex, OpenCode and Pi up to ask there and to hear your answer the moment it's ready,
-even while they sit idle at the prompt.
+even while they sit idle at the prompt. Antigravity too, as a first version to try, when you name it
+(`--app antigravity`, [below](#antigravity)).
 
 ```sh
 npx -y pendingyou@latest init
 ```
 
 Run it once on each computer, in a terminal. It finds the agents on the computer (Claude Code, Codex, OpenCode, Pi;
-`--app` names some), says what it found, and for each one:
+`--app` names some, and only `--app antigravity` sets Antigravity up), says what it found, and for each one:
 
 - connects it to Pending You through **this computer's own sign-in**: its own connection ("Claude Code on Ann-MBP",
   "Codex on Ann-MBP" on your Assistants page), which its MCP server and its hooks share, so there's nothing to
@@ -186,6 +187,51 @@ Pending You's tools are there.
 Then run `/reload` in each Pi session that's open, or start `pi`. Pi's shell waits for a command to end, so in Pi
 `npx pendingyou hold` answers at once instead of waiting.
 
+## Antigravity
+
+Google's Antigravity CLI 1.5.12 or later (the `agy` command), as a first version to try: `init` sets it up only when
+you name it, alone or with others (`npx -y pendingyou@latest init --app antigravity`, or `--app codex,antigravity`).
+With no `--app` it never looks for agy or touches `~/.gemini`, and `status` shows Antigravity once it's set up.
+Everything is one plugin, Pending You's, in a folder of its own that `init` writes whole:
+`~/.gemini/config/plugins/pendingyou/`, with
+
+- `mcp_config.json`: the bridge as a local server, with its own connection here ("Antigravity on Ann-MBP"), and the
+  tools every task uses loaded with each conversation (`"tools": {"post_request": {"eager": true}, …}`; agy loads the
+  rest when the model asks for them). `--oauth` puts Pending You's address there instead, which Antigravity signs in to
+  by itself. A `pendingyou` server you added to `~/.gemini/config/mcp_config.json` yourself would be a second one:
+  `init` asks to take it out (and `uninstall` puts it back), or keeps it and adds none.
+- `rules/AGENTS.md`: the guide's short version, always on while the plugin is (agy doesn't give a server's own
+  instructions to its model), and how answers reach an Antigravity conversation; `skills/pendingyou/SKILL.md`.
+- `hooks.json`: the same hooks' script as the other agents', as a conversation starts (its first message), at each
+  turn's first model call, after Pending You's tools and as a turn ends (once). Each line ends `|| echo '{}'`: agy
+  reads a JSON object from every hook.
+
+agy finds the plugin and turns it on by itself (`agy plugin disable pendingyou` turns it off, and `init` never turns it
+back on). It loads plugins as it starts, so restart it afterwards (`/exit`, then `agy`; `agy -c` picks the conversation
+up again).
+
+Nothing outside Antigravity can start a turn in it, so an idle conversation hears your answer only through a hold its
+agent starts: after it posts a card it runs `npx pendingyou hold <requestId>` as a background command, which ends when
+you answer and so wakes it (inside agy, the hold listens with Antigravity's own sign-in). An answer that waits for your
+next message comes with it.
+
+What's known not to work yet: a permission prompt in Antigravity doesn't become a card (you answer it in agy), and an
+idle conversation hears an answer only through a hold it started. As a turn ends, the hooks read its last message from
+the end of agy's own transcript, to catch a question left only in chat. After a card is posted they ask Pending You for
+the conversation's open cards, since agy doesn't hand them the card's id (an answer, `post_answer`, isn't learned so).
+The same message sent twice in a row reads as a hold's wake when the turn before left a command running.
+
+Antigravity asks you before each Pending You tool call and each shell command. `init` can allow both for you, in
+`~/.gemini/antigravity-cli/settings.json`'s `permissions.allow` (your other settings kept as they were):
+
+```json
+"mcp(pendingyou_pendingyou/*)",
+"command(npx pendingyou hold)"
+```
+
+It asks first, at a terminal, apart from the rest, and adds nothing when there's nobody to ask or with `--yes`; run
+`init --app antigravity` again at a terminal to add them later. `uninstall` takes out only the ones it added.
+
 ## Nothing left only in chat
 
 Deep into a long conversation, Claude Code tends to end a turn with a question for you, a step only you can do, or a
@@ -359,6 +405,8 @@ its folder (under `~` only) and `live` or `closed`. Pending You counts a session
   idle 30 minutes) says closed.
 - **OpenCode and Pi**: the plugin and the extension, as a session starts and every 5 minutes while the app runs, and
   closed as it goes.
+- **Antigravity**: as a conversation's first message comes, Codex's small process in the background, every 5 minutes
+  while agy runs, and closed once it's gone (agy has no hook for a conversation's end).
 
 It's never in your way: the hooks only start it in the background, each send gives up after 3 seconds, and a Pending
 You from before presence is taken quietly. A sign-in that only hears (`--oauth`) sends nothing. `npx pendingyou status`

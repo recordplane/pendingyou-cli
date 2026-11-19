@@ -78,6 +78,11 @@ export const HERDR_AGENTS: Record<AppId, string> = {
   codex: 'codex',
   opencode: 'opencode',
   pi: 'pi',
+  // UNCONFIRMED (2026-11-19): Herdr's own name for Antigravity's agent. Herdr's agent names are its integration targets
+  // (claude, codex, opencode, pi), and its API lists Antigravity's as `antigravity_cli`
+  // (packages/herdr-plugin/test/fixtures/herdr-api-schema.json, IntegrationTarget), so that's taken here until an agy
+  // pane in Herdr shows its agent; `antigravity` (what hc reports) is the other candidate.
+  antigravity: 'antigravity_cli',
 }
 
 export const URGENCIES = ['now', 'today', 'whenever'] as const

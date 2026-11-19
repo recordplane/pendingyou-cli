@@ -2,6 +2,7 @@
 // it with their own Io.
 
 import { HOOK_DEADLINE_MS, refreshInBackground, SignInNeeded, Unavailable } from './api.ts'
+import { antigravityHook, isAgyHook } from './apps/antigravity-hooks.ts'
 import { setAnswerWait } from './apps/codex.ts'
 import { heardHook } from './apps/codex-midturn.ts'
 import { listen, listenHanded, posted } from './apps/codex-wake.ts'
@@ -213,6 +214,13 @@ export const isHook = (argv: readonly string[]) => {
   return HOOK_COMMANDS.has(command)
 }
 
+/** Whether a hook's arguments are Antigravity's (`--app antigravity` or `--app=antigravity`). */
+const forAntigravity = (argv: readonly string[]) =>
+  argv.some(
+    (arg, index) =>
+      arg === '--app=antigravity' || (arg === '--app' && argv[index + 1] === 'antigravity'),
+  )
+
 export async function main(argv: readonly string[], io: Io): Promise<number> {
   const hook = isHook(argv)
   let command: Command
@@ -224,6 +232,8 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
       io.err(
         `pendingyou: ${message} Skipped this hook; run npx pendingyou@latest init to repair it.\n`,
       )
+      // Antigravity reads a hook's answer as a JSON object, always.
+      if (forAntigravity(argv)) io.out('{}\n')
       return 0
     }
     if (error instanceof UsageError) {
@@ -235,6 +245,11 @@ export async function main(argv: readonly string[], io: Io): Promise<number> {
   // `pickup --help` and the like: nothing for Claude Code to add to the conversation.
   if (hook && !HOOK_COMMANDS.has(command.name)) return 0
   try {
+    // Antigravity's hooks: agy's input and answers in its own shapes (apps/antigravity-hooks.ts).
+    if (hook && 'app' in command && command.app === 'antigravity' && isAgyHook(command.name))
+      return await antigravityHook(io, command.name, command.origin, (agyIo) =>
+        runHook(agyIo, command),
+      )
     return hook ? await runHook(io, command) : await run(io, command)
   } catch (error) {
     // Plain words only: never a stack, a token or a server's description.

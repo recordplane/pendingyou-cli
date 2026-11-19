@@ -164,6 +164,11 @@ export interface AppModule {
   name: string
   /** The oldest version init sets up ("2.1.0"); an older one is named, and skipped. */
   minVersion: string
+  /**
+   * Set up only when `--app` names it (0.45.0: Antigravity, until it has run for real): `init` with no `--app` never
+   * looks for it or touches its files, and `status` covers it once init has set it up.
+   */
+  optIn?: boolean
   /** Whether it's installed here (its command answers `--version`), and which version; null when it isn't. */
   detect(io: Io): Promise<Detected | null>
   /**

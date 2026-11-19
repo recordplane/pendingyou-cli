@@ -12,6 +12,9 @@
 // removes); when that's gone it takes the first Node it finds. Without one it exits 0 with one line on stderr: a hook
 // never blocks anyone. When the private copy couldn't be made, it runs this version through npx instead.
 //
+// Antigravity's hooks (apps/antigravity-hooks.ts) need a JSON object on stdout whatever happens, so without a Node the
+// shim prints `{}` for them.
+//
 // Its one fast path: `permission-done` (every tool call) starts no Node while no session has a prompt written down.
 // `notify` (0.16.0, Claude Code's Notification hook) needs none: init's matcher has Claude Code run it only for a
 // dialog that has waited on screen (`permission_prompt`), which always has something to do, and never for its other
@@ -74,6 +77,8 @@ if [ ! -x "$node" ]; then
 fi
 if [ -z "$node" ] || [ ! -r "$cli" ]; then
   echo "pendingyou: its Node or its copy of pendingyou is gone. Run: npx -y pendingyou@latest init" >&2
+  # Antigravity reads a hook's output as a JSON object, always.
+  case " $* " in *" --app antigravity "*) echo '{}' ;; esac
   exit 0
 fi
 exec "$node" "$cli" "$@"

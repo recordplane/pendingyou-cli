@@ -80,7 +80,8 @@ function spoken(text: string): string {
 const FILLER =
   /^(?:(?:pending\s*(?:you|new|view)|hey|hi|hello|yo|ok(?:ay)?|so|um+|uh+|well|alright|all right|right|oh|and|also|now|please|quick question)\b[\s,.:;!?-]*)+/i
 /** An assistant's name a message may open with: "hey Claude", "Codex, …". */
-const ASSISTANT = /^(?:claude|codex|opencode|pi|cursor|grok|chatgpt|gemini)\b[\s,.:;!-]*/i
+const ASSISTANT =
+  /^(?:claude|codex|opencode|pi|cursor|grok|chatgpt|gemini|antigravity)\b[\s,.:;!-]*/i
 /** A name said to the agent at the very start: one word and a comma ("Wren, how many …"). */
 const NAMED = /^[A-Z][\p{L}’'-]*,\s+/u
 

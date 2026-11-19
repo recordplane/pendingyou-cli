@@ -18,7 +18,10 @@
 // cards (`source`). And a session start adds one line while Pending You says the app's setup isn't finished (setup.ts),
 // from the same request. OpenCode has no session-start hook (0.12.0): its plugin runs `handoff` with each message, and
 // with the session's first one names how it started (`source`: startup or resume), which adds what pickup would say.
-// Pi's extension (0.12.0) runs both, with Pi's session in place of the hook's input.
+// Pi's extension (0.12.0) runs both, with Pi's session in place of the hook's input. Antigravity's hooks
+// (apps/antigravity-hooks.ts) run pickup at a conversation's first message (its SessionStart) and the hand-off at each
+// turn's first model call, their input read as the others' is; an answer there says to hold for the next one, as
+// Claude Code's does, since a hold the agent starts is the only thing that wakes an idle Antigravity conversation.
 //
 // Whatever they print, Claude Code adds to the conversation. A hook must never get in the way: each is time-boxed,
 // has a hard deadline (main.ts) after which it prints only its fallback, never refreshes the sign-in itself (api.ts),
@@ -192,6 +195,8 @@ async function hookInput(io: Io): Promise<{
   transcript: string | null
   prompt: string | null
   turn: string | null
+  /** A turn its app started for a finished background command (Antigravity's hold): not a message of the person's. */
+  woken: boolean
 }> {
   const text = await io.readStdin(500).catch(() => '')
   let input: Record<string, unknown> = {}
@@ -208,6 +213,7 @@ async function hookInput(io: Io): Promise<{
     transcript: string(input.transcript_path),
     prompt: string(input.prompt),
     turn: string(input.turn_id),
+    woken: input.woken === true,
   }
 }
 
@@ -422,7 +428,8 @@ export async function pickup(
               (await readSaid(io, app).catch(() => ({}) as Record<string, Said>))[input.session]
             )?.fork
         : undefined
-    if (app === 'codex') await keepPresent(io, origin, input.session, input.given ? cwd : null)
+    if (app === 'codex' || app === 'antigravity')
+      await keepPresent(io, origin, input.session, input.given ? cwd : null, app)
     else if (app === DEFAULT_APP && (mode === 'pickup' || input.session))
       await announce(io, origin, app, {
         state: 'live',
@@ -484,7 +491,7 @@ export async function pickup(
       name: named ?? null,
     })
     // Their message: the session's answers in Pending You were read here (0.36.0), beside the answers' request.
-    if (mode === 'handoff' && readsAnswers(asker, input.prompt, io.now()))
+    if (mode === 'handoff' && !input.woken && readsAnswers(asker, input.prompt, io.now()))
       reading = readHere(io, origin, app, cwd, asker)
     const query = new URLSearchParams([
       ...folderForms(cwd, io.home).map((form) => ['cwd', form] as [string, string]),
@@ -569,10 +576,10 @@ export async function pickup(
         await releaseHanded(io, origin, heard.requestId, momentOf(heard)).catch(() => {})
       return 0
     }
-    // Claude Code without the wake mod waits on a hold; a Codex thread, or an OpenCode or Pi session, is woken by its
-    // listener.
+    // Claude Code without the wake mod, and Antigravity, wait on a hold; a Codex thread, or an OpenCode or Pi session, is
+    // woken by its listener.
     const again = (id: string) =>
-      app === DEFAULT_APP
+      app === DEFAULT_APP || app === 'antigravity'
         ? `run \`${holdCommand(id, origin)}\` in the background`
         : `carry on: Pending You wakes this ${app === 'codex' ? 'thread' : 'session'} when they write back`
     // One write, the line included: at the deadline a hook has printed all of this or none of it. Printed before it's
