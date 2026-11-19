@@ -17,8 +17,8 @@
 //   MCP apps, signed in by agy's own OAuth) would be a second one: init asks to take it out (and puts it back on
 //   uninstall), or keeps it, and then the plugin brings no server of its own.
 // - Its hooks (antigravity-hooks.ts) run the shim, `|| echo '{}'`: agy reads a JSON object from every hook.
-// - It's woken only by a hold the agent starts in the background (`npx pendingyou hold <requestId>`, hold.ts): the rules
-//   say so. Nothing starts a turn from outside it.
+// - It's woken only by a hold the agent starts in the background (`npx -y pendingyou hold <requestId>`, hold.ts): the
+//   rules say so. The -y since 0.45.1: npx asks before installing in agy's terminal, and nobody answers it there. Nothing starts a turn from outside it.
 // - agy asks before every MCP tool call and every shell command unless a rule in ~/.gemini/antigravity-cli/settings.json
 //   (`permissions.allow`) allows it. init asks the person, at a terminal and apart from the rest, whether to add two
 //   (PERMISSION_RULES); with nobody to ask, or --yes, it adds none. Uninstall takes out only the ones it added.
@@ -33,7 +33,7 @@ import type { Io } from '../io.ts'
 import { editJson, isObject, readObject } from '../json.ts'
 import { removePresenceFiles } from '../presence.ts'
 import { foundBy, headlessReason } from '../remote.ts'
-import { connectionTitle, FINISH_SAY, setupOf, setupStatus } from '../setup.ts'
+import { connectionTitle, FINISH_SAY, setupCalls, setupOf, setupStatus } from '../setup.ts'
 import { VERSION } from '../version.ts'
 import { AGY_HOOK_EVENTS, AGY_POST_TOOL_MATCHER, agyHookFiles } from './antigravity-hooks.ts'
 import { threadFiles } from './codex-wake.ts'
@@ -73,13 +73,15 @@ export const EAGER_TOOLS = [
  * `<plugin folder>_<server>` to agy (seen live, 1.5.12: `pendingyou_pendingyou`, and its prompt "Allow calling this
  * tool? pendingyou_pendingyou/<tool>"), so `mcp(pendingyou_pendingyou/*)` covers its every tool. Antigravity's docs
  * (its Permissions page, read 2026-11-19) say a `command(<words>)` rule "matches command
- * prefixes word-by-word literally by default" in the CLI, so `npx pendingyou hold req_… --origin …` is allowed too;
- * not yet seen live. The app's section adds that a compound command line (`cd … && npx pendingyou hold …`) turns
- * prefix matching off: the rules give the hold as a command line of its own.
+ * prefixes word-by-word literally by default" in the CLI, so `npx -y pendingyou hold req_… --origin …` is allowed
+ * too; not yet seen live. The app's section adds that a compound command line (`cd … && npx -y pendingyou hold …`)
+ * turns prefix matching off: the rules give the hold as a command line of its own. Until 0.45.1 the rule was
+ * `command(npx pendingyou hold)`, without the -y (holdWords): init asks again for the new one, and an install's old
+ * rule stays in its manifest, so uninstall still takes it out.
  */
 export const PERMISSION_RULES = [
   'mcp(pendingyou_pendingyou/*)',
-  'command(npx pendingyou hold)',
+  'command(npx -y pendingyou hold)',
 ] as const
 /** The plugin's files, by their path in its folder. */
 const FILES = [
@@ -235,7 +237,7 @@ const allowedIn = (file: JsonFile): string[] => {
     : []
 }
 
-/** Some rules as words: “mcp(pendingyou_pendingyou/*) and command(npx pendingyou hold)”. */
+/** Some rules as words: “mcp(pendingyou_pendingyou/*) and command(npx -y pendingyou hold)”. */
 const rulesText = (rules: readonly string[]) =>
   rules.length > 1 ? `${rules.slice(0, -1).join(', ')} and ${rules.at(-1)}` : (rules[0] ?? '')
 
@@ -249,14 +251,24 @@ async function writeBack(path: string, next: string): Promise<void> {
 /** The stub's words without its front matter, which agy's rules don't take. */
 export const stubBody = (stub: string) => stub.replace(/^---\n[\s\S]*?\n---\n?/, '').trim()
 
-/** The plugin's rules: the stub, and how answers reach an Antigravity conversation (a hold it starts itself). */
+/**
+ * The plugin's rules: the stub, how answers reach an Antigravity conversation (a hold it starts itself), and (0.45.1)
+ * how to finish setup, with the same three calls a session start's line gives (setupCalls). Live on 2026-11-19 a
+ * conversation continued with `agy -c` had no session start, so nothing said them: the agent asked whoami for the
+ * whole guide, agy saved the long answer to a file, and the agent read its setup section with `node -e`, behind agy's
+ * "Run this command?" prompt. With the calls in the rules, setup needs no guide, no file and no command.
+ */
 export function rulesFile(stub: string, origin: string): string {
   const body = stubBody(stub)
   return `# Pending You
 
 ${body ? `${body}\n\n` : ''}## Answers in Antigravity
 
-An idle Antigravity conversation hears your person’s answer only through a hold you start: right after you post a card (post_request) or an answer (post_answer), run \`${holdCommand('<requestId>', origin)}\` as a background command (run_command with a short WaitMsBeforeAsync), then keep working or end your turn. When it finishes it says what came: act on it as it says. Answers waiting at your person’s next message come with it.
+An idle Antigravity conversation hears your person’s answer only through a hold you start: right after you post a card (post_request) or an answer (post_answer), run \`${holdCommand('<requestId>', origin, undefined, 'antigravity')}\` as a background command (run_command with a short WaitMsBeforeAsync), then keep working or end your turn. When it finishes it says what came: act on it as it says. Answers waiting at your person’s next message come with it.
+
+## Finishing setup
+
+When your person says “${FINISH_SAY}”, or asks you to finish setting up Pending You, this is all of it: don’t ask whoami for the guide, and run no command to read anything. ${setupCalls('antigravity', true)}
 `
 }
 
@@ -851,7 +863,7 @@ export const antigravity: AppModule = {
       connected && hooksOk
         ? '  ok      Presence: tells Pending You when a conversation is open (its keeper says so every 5 minutes while agy runs)'
         : `          Presence: off: it needs ${connected ? 'the hooks' : 'Antigravity signed in through this computer’s own connection'}`,
-      `          Wake: an idle conversation hears your answer through the hold it starts in the background (${holdCommand('<requestId>', origin)}); otherwise with your next message`,
+      `          Wake: an idle conversation hears your answer through the hold it starts in the background (${holdCommand('<requestId>', origin, undefined, 'antigravity')}); otherwise with your next message`,
     ]
     const setup = setupStatus(NAME, signIn.state === 'ok' ? setupOf(signIn.for) : null)
     if (setup) lines.push(`  ${setup === 'finished' ? 'ok     ' : '       '} Setup: ${setup}`)

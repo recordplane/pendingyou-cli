@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.45.1 (2026-11-19)
+
+Found by the first live run of Antigravity.
+
+- **Antigravity's background wait starts.** After asking you something, an Antigravity conversation starts a wait in
+  the background that wakes it when you answer. It never started: Antigravity runs commands in a terminal, and there
+  npm stopped to ask whether to install pendingyou, a question nobody answers in the background. So your answer woke
+  nothing. The wait is now `npx -y pendingyou hold <requestId>`, which doesn't ask. Antigravity's permission rule for
+  it becomes `command(npx -y pendingyou hold)`: run `npx -y pendingyou@latest init --app antigravity` again at a
+  terminal and say yes to add it (`status` says it's missing until then). The old rule stays until `uninstall`, which
+  takes out both. Claude Code's wait is unchanged: npm doesn't ask there.
+- **Antigravity finishes setup without a shell command.** When "Finish setting up Pending You" came in a conversation
+  continued with `agy -c`, the agent read the whole guide, which Antigravity saved to a file, and then ran a shell
+  command to read it, behind Antigravity's "Run this command?" prompt. The rules `init` writes now carry setup's three
+  calls, so no guide, file or command is needed.
+
 ## 0.45.0 (2026-11-19)
 
 - **Antigravity, as a first version to try.** `npx -y pendingyou@latest init --app antigravity` sets up Google's
@@ -17,7 +33,7 @@
   takes out exactly what `init` added. Restart agy afterwards: it loads plugins as it starts.
 - **What doesn't work yet in Antigravity.** Its permission prompts don't come to your cards: you answer them in agy.
   Nothing outside Antigravity can start a turn in it, so an idle conversation hears your answer only through a hold it
-  started itself in the background after asking (`npx pendingyou hold <requestId>`); one that didn't start a hold hears
+  started itself in the background after asking (`npx pendingyou hold <requestId>`; `npx -y` since 0.45.1); one that didn't start a hold hears
   it with your next message. An answer the agent posts (`post_answer`) isn't known to the conversation until later. If
   you send the same message twice in a row while a command the agent started is still running, the second is taken
   for a hold waking it, and answers waiting for you aren't read with it.

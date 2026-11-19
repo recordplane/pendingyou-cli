@@ -580,7 +580,7 @@ export async function pickup(
     // woken by its listener.
     const again = (id: string) =>
       app === DEFAULT_APP || app === 'antigravity'
-        ? `run \`${holdCommand(id, origin)}\` in the background`
+        ? `run \`${holdCommand(id, origin, undefined, app)}\` in the background`
         : `carry on: Pending You wakes this ${app === 'codex' ? 'thread' : 'session'} when they write back`
     // One write, the line included: at the deadline a hook has printed all of this or none of it. Printed before it's
     // marked as handed over, so a hook cut off in between repeats an answer rather than losing it.

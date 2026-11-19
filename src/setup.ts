@@ -81,7 +81,7 @@ export function setupCalls(app: AppId, stopFirst: boolean): string {
   // Antigravity (2026-11-19): only the hold its agent starts wakes an idle conversation (the plugin's rules say how).
   const third =
     app === 'antigravity'
-      ? '3. post_request a short test question in that testAreaId, start its hold in the background as your rules say (npx pendingyou hold with its requestId), tell your person it’s on its way, and end your turn: the hold wakes you when they answer, so don’t ask them to type anything.'
+      ? '3. post_request a short test question in that testAreaId, start its hold in the background as your rules say (npx -y pendingyou hold with its requestId), tell your person it’s on its way, and end your turn: the hold wakes you when they answer, so don’t ask them to type anything.'
       : '3. post_request a short test question in that testAreaId, tell your person it’s on its way, and end your turn: you’re woken when they answer, so don’t ask them to type anything.'
   return `Three calls, nothing to install or approve: 1. whoami with your name.${stopFirst ? ' If it says app.setUp is true, another session did this: stop.' : ''} 2. report_setup with source ${app}, your name, skillSaved true, hears instant, and skillVersion set to whoami’s skill.latest. Its answer has a testAreaId. ${third}`
 }

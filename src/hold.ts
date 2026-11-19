@@ -17,9 +17,8 @@
 // Inside Antigravity (agy) it waits as it does for Claude Code: agy's run_command sends a command to the background
 // (WaitMsBeforeAsync), and a background command that finishes wakes the agent, the only way an idle Antigravity
 // conversation hears an answer (nothing starts a turn from outside it). It hears with Antigravity's own sign-in and its
-// cards (`source`), once init has set Antigravity up here and an agy process is among its ancestors, so the command an
-// agent runs, and the permission rule init may add for it (`command(npx pendingyou hold)`), stay the same as Claude
-// Code's.
+// cards (`source`), once init has set Antigravity up here and an agy process is among its ancestors. Its command is
+// `npx -y pendingyou hold` (0.45.1; holdWords), and so is the permission rule init may add for it.
 import { getJson, SignInNeeded, Unavailable } from './api.ts'
 import { APP_NAMES, type AppId, DEFAULT_APP } from './apps/ids.ts'
 import { readPiManifest } from './apps/pi.ts'
@@ -47,16 +46,28 @@ export function durationText(ms: number): string {
 }
 
 /**
+ * The words a hold starts with. Antigravity's with npx's -y (0.45.1): agy runs a command in a terminal, where npx stops
+ * to ask before it installs a version it hasn't kept for a bare `pendingyou` ("Need to install the following packages:
+ * pendingyou@0.45.0 Ok to proceed? (y)"), and nobody answers a background command. Seen live on 2026-11-19: the hold
+ * sat at that question, never started, and the person's answer woke nothing. Claude Code's shell has no terminal, so
+ * npx installs without asking there, and init's `Bash(npx pendingyou hold:*)` stays as it was.
+ */
+export const holdWords = (app: AppId = DEFAULT_APP) =>
+  app === 'antigravity' ? 'npx -y pendingyou hold' : 'npx pendingyou hold'
+
+/**
  * The command that holds for this request again, as it was started: its origin and timeout when they aren't the
- * defaults (`--origin` rather than PENDINGYOU_ORIGIN=…, so init's `Bash(npx pendingyou hold:*)` still allows it).
+ * defaults (`--origin` rather than PENDINGYOU_ORIGIN=…, so init's `Bash(npx pendingyou hold:*)`, and Antigravity's
+ * `command(npx -y pendingyou hold)`, still allow it).
  */
 export function holdCommand(
   requestId: string,
   origin = DEFAULT_ORIGIN,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  app: AppId = DEFAULT_APP,
 ): string {
   return [
-    `npx pendingyou hold ${requestId}`,
+    `${holdWords(app)} ${requestId}`,
     ...(origin === DEFAULT_ORIGIN ? [] : [`--origin ${origin}`]),
     ...(timeoutMs === DEFAULT_TIMEOUT_MS ? [] : [`--timeout ${durationText(timeoutMs)}`]),
   ].join(' ')
@@ -107,7 +118,7 @@ export async function hold(
     return 0
   }
   const app = await holdApp(io)
-  const again = holdCommand(requestId, origin, options.timeoutMs)
+  const again = holdCommand(requestId, origin, options.timeoutMs, app)
   const started = io.now()
   const deadline = started + options.timeoutMs
   const print = (lines: string[]) => io.out(`${lines.join('\n')}\n`)

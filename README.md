@@ -211,7 +211,8 @@ back on). It loads plugins as it starts, so restart it afterwards (`/exit`, then
 up again).
 
 Nothing outside Antigravity can start a turn in it, so an idle conversation hears your answer only through a hold its
-agent starts: after it posts a card it runs `npx pendingyou hold <requestId>` as a background command, which ends when
+agent starts: after it posts a card it runs `npx -y pendingyou hold <requestId>` as a background command (the `-y`
+because agy runs commands in a terminal, where npx would otherwise stop to ask before installing), which ends when
 you answer and so wakes it (inside agy, the hold listens with Antigravity's own sign-in). An answer that waits for your
 next message comes with it.
 
@@ -226,7 +227,7 @@ Antigravity asks you before each Pending You tool call and each shell command. `
 
 ```json
 "mcp(pendingyou_pendingyou/*)",
-"command(npx pendingyou hold)"
+"command(npx -y pendingyou hold)"
 ```
 
 It asks first, at a terminal, apart from the rest, and adds nothing when there's nobody to ask or with `--yes`; run
