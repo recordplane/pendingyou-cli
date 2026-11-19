@@ -142,7 +142,7 @@ export type Card = {
     assistant: {
       id: string
       name: string
-      app: "claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook" | (string & {})
+      app: "claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "antigravity" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook" | (string & {})
       appName: string
     }
     agent?: {
@@ -571,7 +571,7 @@ export type Presentation = {
       quote?: string
       who: "asker" | "webhook" | "person" | "helper" | "their_assistant" | "you" | (string & {})
       name?: string
-      source?: "claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook" | "teammate" | (string & {})
+      source?: "claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "antigravity" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook" | "teammate" | (string & {})
       when: "past" | "now" | "next" | (string & {})
       rounds?: {
         at?: string
@@ -580,7 +580,7 @@ export type Presentation = {
         quote?: string
         who: "asker" | "webhook" | "person" | "helper" | "their_assistant" | "you" | (string & {})
         name?: string
-        source?: "claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook" | "teammate" | (string & {})
+        source?: "claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "antigravity" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook" | "teammate" | (string & {})
         when: "past" | "now" | "next" | (string & {})
       }[]
     }[]
@@ -964,7 +964,7 @@ export type AssistantList = {
 
 export type Assistant = {
   id: string
-  app: "claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook" | (string & {})
+  app: "claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "antigravity" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook" | (string & {})
   appName: string
   name: string
   machine?: {
@@ -1010,7 +1010,7 @@ export type Show = {
   agent: {
     id: string
     name: string
-    app: "claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook" | (string & {})
+    app: "claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "antigravity" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook" | (string & {})
   }
   places: ShowPlace[]
   expiresAt: string
@@ -1132,7 +1132,7 @@ export type ListCardsQuery = {
   area?: string[]
   assistant?: string[]
   agent?: string[]
-  app?: ("claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook")[]
+  app?: ("claude-code" | "codex" | "cursor" | "gemini-cli" | "opencode" | "pi" | "antigravity" | "grok" | "muse" | "chatgpt" | "claude" | "dots" | "other" | "webhook")[]
   machine?: string[]
   threadId?: string
   limit?: number
