@@ -74,8 +74,9 @@ export const EAGER_TOOLS = [
  * tool? pendingyou_pendingyou/<tool>"), so `mcp(pendingyou_pendingyou/*)` covers its every tool. Antigravity's docs
  * (its Permissions page, read 2026-11-19) say a `command(<words>)` rule "matches command
  * prefixes word-by-word literally by default" in the CLI, so `npx -y pendingyou hold req_… --origin …` is allowed
- * too; not yet seen live. The app's section adds that a compound command line (`cd … && npx -y pendingyou hold …`)
- * turns prefix matching off: the rules give the hold as a command line of its own. Until 0.45.1 the rule was
+ * too; not yet seen live. A compound command line (`cd … && npx -y pendingyou hold …`) wouldn't start with the rule's
+ * words, so the guide's Antigravity section (2.63.2) says to run the hold as a command line of its own, never after
+ * `cd … &&` or chained with anything, exactly as the rules give it. Until 0.45.1 the rule was
  * `command(npx pendingyou hold)`, without the -y (holdWords): init asks again for the new one, and an install's old
  * rule stays in its manifest, so uninstall still takes it out.
  */
