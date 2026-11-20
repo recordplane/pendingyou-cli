@@ -553,6 +553,10 @@ export type Presentation = {
   }
   actions: PresentationAction[]
   settled?: Line
+  fallbackAhead?: {
+    label: Line
+    line: Line
+  }
   route?: {
     first: {
       name: string
