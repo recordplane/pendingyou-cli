@@ -624,6 +624,9 @@ export type Presentation = {
   ask?: AskFace
   sources?: EmailFace[]
   talk?: CardTalk
+  seen?: {
+    upTo: string
+  }
   fallback: {
     line: Line
     path: string
@@ -1394,7 +1397,7 @@ export type DelegateRequest = {
 export type TakeBackRequest = Record<string, never>
 
 export type SeenRequest = {
-  /** The newest thing on the card the screen drew: its newest message, or when it came or last changed. Absent: up to now. */
+  /** The newest thing on the card the screen drew: the `presentation.seen.upTo` the whole card it drew came with (its newest message, or when it came or last changed). Absent: up to now. */
   upTo?: string
 }
 
